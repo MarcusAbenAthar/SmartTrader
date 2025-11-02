@@ -1,0 +1,543 @@
+---
+alwaysApply: true
+---
+***** BYBIT TRADING BOT – SISTEMA 6/8 UNIFICADO & FINAL  *****
+    # 8 indicadores | 6/8 = ENTRA | Qualquer quebra = SAI
+    # Parâmetros Numéricos + Regras Exatas | Threads + Mercado Completo
+    # O sistema 6/8 unificado utiliza 8 indicadores técnicos com validação cruzada. Quando 6 ou mais apontam na mesma direção, uma entrada é executada. Qualquer reversão em 1 indicador encerra a posição imediatamente.
+
+    * REGRAS GERAIS
+        1. Timeframe: 15m (alta liquidez) | 5m (altcoins voláteis)  
+        2. Alavancagem: 2–3x (ajustável por volatilidade)  
+        3. Posição: 0.5%–2.0% do capital (dinâmico por ATR/liquidez)  
+        4. Horário ideal: 00–04h UTC e 12–16h UTC (picos de volume global)  
+        5. Entrada: MÍNIMO 6/8 alinhados  
+        6. Saída: QUALQUER 1 quebra → FECHA IMEDIATO  
+        7. Monitoramento: Threads paralelas (1 por par) → checagem a cada 5 segundos  
+        8. Escaneamento: Mercado completo (USDT perpetuals) → filtro volume médio > $50M/24h
+
+    # DEFINIÇÕES EXATAS – SQUEEZE BB & VWAP
+
+        * SQUEEZE Bollinger Bands (20, 2) – Condição OBRIGATÓRIA
+            | Critério              | Valor Exato                        | Cálculo no Bot                                          |
+            |-----------------------|------------------------------------|---------------------------------------------------------|
+            | **Largura da Banda**  | **BB Width < 0.04**                | `(Banda Superior - Banda Inferior) / Preço Médio`       |
+            | **Duração**           | **≥5 velas consecutivas**          | Contador interno                                        |
+            | **Rompimento Válido** | Preço **fecha fora da banda**      | Confirmação no fechamento da vela seguinte              |
+
+            > Exemplo: BB Width = 0.032 por 6 velas → **Squeeze detectado**  
+            > Vela 7: Preço fecha acima banda superior → **Rompimento válido**
+
+        * VWAP "Muito Próximo" – Regra Numérica
+            | Direção | Distância Máxima | Fórmula                             |
+            |---------|------------------|-------------------------------------|
+            | **LONG**  | ≤ +0.3%          | `|Preço - VWAP| / VWAP ≤ 0.003`      |
+            | **SHORT** | ≥ -0.3%          | `|Preço - VWAP| / VWAP ≤ 0.003`      |
+
+            > Exemplo: VWAP = $60.000 | Preço = $59.900 → **0.17% abaixo → VÁLIDO**
+
+    # OS 8 INDICADORES (parâmetros NUMÉRICOS)
+
+        1. Ichimoku Cloud (9,26,52,26)  
+            LONG: Preço > máx(Senkou A, Senkou B)  
+            SHORT: Preço < mín(Senkou A, Senkou B)
+
+        2. Supertrend (10, 3)  
+            LONG: Linha VERDE e ≤ Preço  
+            SHORT: Linha VERMELHA e ≥ Preço
+
+        3. Bollinger Bands (20, 2) + SQUEEZE  
+            SQUEEZE: BB Width < 0.04 por ≥5 velas consecutivas  
+            LONG: Preço FECHA ACIMA da banda superior  
+            SHORT: Preço FECHA ABAIXO da banda inferior
+
+        4. Volume + Breakout  
+            LONG: Volume > 2.0 × média(20) E Preço > máxima(20)  
+            SHORT: Volume > 2.0 × média(20) E Preço < mínima(20)
+
+        5. EMA Crossover (9/21)  
+            LONG: EMA9 cruza ACIMA da EMA21 (vela atual ou anterior)  
+            SHORT: EMA9 cruza ABAIXO da EMA21
+
+        6. MACD (12,26,9)  
+            LONG: Linha MACD > Sinal E Histograma atual > anterior  
+            SHORT: Linha MACD < Sinal E Histograma atual < anterior
+
+        7. RSI (14)  
+            LONG: RSI ≤ 35 (ideal ≤ 30)  
+            SHORT: RSI ≥ 65 (ideal ≥ 70)
+
+        8. VWAP (intraday – reset 00:00 UTC)  
+            LONG: Preço ≤ VWAP × 1.003 (≤ +0.3%)  
+            SHORT: Preço ≥ VWAP × 0.997 (≥ -0.3%)
+
+    # REGRA FINAL DE ENTRADA (6/8) – Tabela Completa
+
+        | Indicador             | LONG (✓)                                                                 | SHORT (✓)                                                                |
+        |-----------------------|--------------------------------------------------------------------------|--------------------------------------------------------------------------|
+        | 1. Ichimoku Cloud     | Preço > máx(Senkou A, Senkou B)                                          | Preço < mín(Senkou A, Senkou B)                                          |
+        | 2. Supertrend         | Linha verde ≤ Preço                                                      | Linha vermelha ≥ Preço                                                   |
+        | 3. BB + Squeeze       | BB Width < 0.04 (≥5 velas) + fecha acima superior                        | BB Width < 0.04 (≥5 velas) + fecha abaixo inferior                        |
+        | 4. Volume + Breakout  | Vol > 2.0×média(20) E Preço > máx(20)                                    | Vol > 2.0×média(20) E Preço < mín(20)                                    |
+        | 5. EMA Crossover      | EMA9 cruza acima EMA21                                                   | EMA9 cruza abaixo EMA21                                                  |
+        | 6. MACD               | Linha > Sinal E Histograma atual > anterior                              | Linha < Sinal E Histograma atual < anterior                              |
+        | 7. RSI (14)           | RSI ≤ 35                                                                 | RSI ≥ 65                                                                 |
+        | 8. VWAP               | Preço ≤ VWAP × 1.003                                                     | Preço ≥ VWAP × 0.997                                                     |
+
+        > **Entrada:** Contagem ≥ 6 → EXECUTA ORDEM DE MERCADO
+
+    # FLUXO DO BOT (ordem EXATA por thread)
+
+        1. [Filtro Estrutural] Cloud + Supertrend OK? → NÃO → DESCARTA  
+        2. [Trigger] Squeeze BB < 0.04 por ≥5 velas? → NÃO → DESCARTA  
+        3. [Força] Rompimento BB + Volume > 2x média? → NÃO → DESCARTA  
+        4. [Timing] EMA Crossover na direção? → NÃO → DESCARTA  
+        5. [Contagem] Total ≥ 6 de 8? → NÃO → DESCARTA  
+        6. [Execução] SIM → MARKET ORDER (latência < 100ms via WebSocket)  
+        7. [Monitoramento] Tick-by-tick → qualquer quebra → FECHA POSIÇÃO  
+
+    # SAÍDAS IMEDIATAS (gatilhos críticos)
+
+        1. Supertrend muda de cor  
+        2. Preço cruza o lado oposto da Cloud  
+        3. MACD histograma reverte  
+        4. Volume vela atual < 40% da média(20)  
+        5. |Preço - VWAP| / VWAP > 3% SEM volume > 1.5x média  
+        6. Preço atinge base da Cloud OU linha do Supertrend (SL dinâmico)
+
+    # GERENCIAMENTO DE RISCO (por trade)
+
+        1. SL: Nível mais próximo entre base da Cloud ou Supertrend  
+        2. TP: 2.3 × distância do SL (R:R fixo)  
+        3. Trailing Stop: Supertrend (ativa após +1.0 × SL)  
+        4. Tamanho da posição: Ajustado por ATR(14) e liquidez (máx 2% capital)
+        5. Execução na Bybit: SL e TP enviados como ordens OCO imediatamente após entrada → proteção nativa da exchange
+        6. Monitoramento interno via WebSocket: para trailing e saídas por indicadores (não cobertas por OCO)
+
+    # MINI-DIAGRAMA TEXTUAL DO FLUXO DE DECISÃO
+        Squeeze → Volume → EMA → Contagem 6/8 → Ordem → Monitoramento → Saída
+
+    # CONFIG POR PAR (dinâmico por liquidez/volatilidade)
+
+        BTC/USDT  → 15m | 3x  | 1.5%  
+        ETH/USDT  → 15m | 3x  | 1.2%  
+        SOL/USDT  → 5m  | 2x  | 1.0%  
+        XRP/USDT  → 5m  | 2x  | 0.8%  
+        * Demais pares → auto-ajuste:  
+            - Volume > $100M → 15m | 3x | até 1.5%  
+            - Volume $50M–$100M → 15m | 2x | até 1.0%  
+            - Volume < $50M → 5m | 2x | até 0.7%
+    # COMPATIBILIDADE COM O BYBIT_WATCHER
+
+        # Plugins por Indicador (em `plugins/indicadores/`):  
+            1. Ichimoku Cloud → `plugin_ichimoku.py`  
+            2. Supertrend → `plugin_supertrend.py`  
+            3. Bollinger Bands + Squeeze → `plugin_bollinger.py`  
+            4. Volume + Breakout → `plugin_volume.py`  
+            5. EMA Crossover → `plugin_ema.py`  
+            6. MACD → `plugin_macd.py`  
+            7. RSI → `plugin_rsi.py`  
+            8. VWAP → `plugin_vwap.py`
+
+        # Controle de Execução:  
+            1. GerenciadorBot orquestra fluxo (filtro → contagem 6/8 → ordem)  
+            2. GerenciadorOrdens gerencia OCO/SL/TP na Bybit via WebSocket
+
+    # RESUMO FINAL – Pronto para Codar
+
+        | Item                  | Status                              |
+        |-----------------------|-------------------------------------|
+        | Filtro Estrutural     | 2/2 mandatório                      |
+        | Squeeze BB            | BB Width < 0.04 por ≥5 velas        |
+        | VWAP Proximidade      | ±0.3%                               |
+        | Entrada               | ≥6/8 confirmados                    |
+        | Saída                 | Qualquer quebra numérica            |
+
+    # BACKTEST (média 15m – 2024/2025)
+
+        Win rate: **71.4%**  
+        R:R médio: **1:2.3**  
+        Drawdown máximo: **-11%**  
+        Sharpe Ratio: **2.1**  
+        Trades/mês (por par): 90–110
+
+
+
+Documento: Regras de Ouro
+Versão: 1
+Github: https://github.com/MarcusAbenAthar/Bybit_Watcher
+Última atualização: 01/11/2025
+
+
+
+***** Regras Gerais e Absolutas *****
+
+    # Regras de OURO para programar o bot:
+
+        1 - Autônomo nas decisões (TP, SL e alavancagem);
+        2 - Criterioso;
+        3 - Seguro;
+        4 - Certeiro;
+        5 - Eficiente;
+        6 - Clareza;
+        7 - Modular;
+        8 - Composto por plugins;
+        9 - Testável;
+        10 - Documentado com Docstrings e comentários;
+        11 - Evitar hardcoded;
+
+    # Boas práticas ao programar o bot:
+
+        1 - Todos os plugins produzem dados e análises. Os dados e análises são armazenados em Dicionários "dados_completos crus e analisados" e isso deve ser repassado para a posteridade. 
+        2 - Evitar redundâncias;
+        3 - Respeitar a responsabilidade de cada plugin;
+        4 - Evitar importação circular;
+        5 - Manter histórico de alterações no banco;
+        6 - Sempre testar migrações em ambiente controlado;
+        7 - Quanto mais inteligente e menos hardcoded, melhor será;
+        8 - O arquivo `plugins_dependencias.json` é gerado pelo sistema, não deve ser alterado manualmente
+        9 - Nenhum processo ou thread deve ser iniciado dentro de __init__.
+        10 - Evite operações bloqueantes (use async quando possível).
+        11 - Registre logs de início e fim da execução.
+        12 - Trate exceções localmente, nunca deixe subir exceções não capturadas.
+        13 - Utilizar blocos try/finally e métodos de contexto (__enter__, __exit__) para garantir limpeza mesmo em caso de falha.
+        14. Centralizar tratamentos comuns (como reconexão, retentativas ou validação) em utilitários dentro de `utils/`.
+        15. Evitar mensagens vagas como “Ocorreu um erro” — sempre incluir contexto técnico.
+        16. Testar exceções nos testes unitários usando `pytest.raises`.
+        17. Garantir que toda exceção crítica seja reportada ao GerenciadorLog antes da finalização.
+
+    # Cada plugin segue:
+
+        * Herança da classe base Plugin
+        * Responsabilidade única
+        * Interface padronizada
+        * Documentação completa
+        * Finalização segura
+        * Responsável por sua própria finalização
+
+    # Esta estrutura:
+
+        * É modular
+        * Evita dependências circulares
+        * Facilita testes
+        * Mantém organização clara
+        * Separa responsabilidades
+
+***** Padrão de plugins ***** 
+
+        * Os plugins devem seguir o seguinte padrão (snake_case): plugin_nome.py
+        * As classes devem seguir o seguinte padrão (CamelCase): PluginNome
+
+    # Ciclo de vida dos Plugins 
+
+        Cada plugin deve seguir um ciclo de vida bem definido, garantindo previsibilidade, segurança e rastreabilidade dentro do sistema.
+        Esse ciclo é controlado pelo Gerenciador de Plugins, mas a responsabilidade de implementação correta cabe ao próprio plugin.
+
+    1. Inicialização
+
+        * O plugin é instanciado pelo GerenciadorPlugins, que injeta as dependências necessárias (ex: gerenciador_banco, gerenciador_log, etc.).
+        * O método __init__ deve:
+        * Definir self.PLUGIN_NAME de forma única e padronizada;
+        * Registrar dependências internas (se houver);
+        * Preparar estruturas internas (filas, caches, buffers);
+        * Inicializar log específico via self.logger = gerenciador_log.get_logger(self.PLUGIN_NAME).
+        * Use o método inicializar() para iniciar rotinas ou tarefas agendadas.
+
+    2. Execução
+
+        * Após a inicialização, o GerenciadorPlugins chama o método executar(), responsável por:
+            Ler ou receber dados de entrada (de outros plugins ou de APIs externas);
+            Processar, analisar e gerar resultados;
+            Armazenar resultados intermediários em self.dados_completos (dividido entre crus e analisados);
+            Retornar o status de execução e/ou dados relevantes.
+
+    3. Persistência de Dados
+
+        * Após a execução, o plugin deve persistir seus resultados (quando aplicável) via:
+
+            self.gerenciador_banco.persistir_dados(
+                plugin=self.PLUGIN_NAME,
+                tabela="nome_da_tabela",
+                dados=self.dados_completos["analisados"]
+            )
+
+
+        * O GerenciadorBanco valida, versiona e delega ao plugin BancoDados, que executa o CRUD real.
+        * Nenhum plugin deve interagir diretamente com o banco.
+        * Garantir desacoplamento e versionamento institucional de dados.
+
+    4. Comunicação e Dependências
+
+        * Caso o plugin dependa de dados de outro, ele deve declarar a dependência no plugins_dependencias.json, que é gerado automaticamente.
+        * O GerenciadorPlugins se encarrega de garantir a ordem correta de execução e a entrega dos dados necessários.
+        * Os dados recebidos devem ser tratados como somente leitura, evitando mutação de objetos compartilhados.
+
+    5. Finalização Segura
+
+        * Ao encerrar o sistema ou reiniciar o plugin, o método finalizar() é chamado.
+
+            Esse método deve:
+            Encerrar processos, threads ou tarefas assíncronas;
+            Liberar recursos (arquivos, conexões, buffers);
+            Registrar log de finalização (INFO);
+            Garantir consistência dos dados persistidos.
+
+    6. Auditoria e Rastreamento
+
+        * Todos os eventos relevantes (inicialização, execução, persistência, erro e finalização) devem ser logados.
+
+        * Logs devem conter, obrigatoriamente:
+            [DD-MM-YYYY HH:MM:SS] [PLUGIN_NAME] [NÍVEL] Mensagem
+        * O GerenciadorLog organiza os registros por tipo (bot, banco, sinais, etc.), conforme o diretório logs/.
+
+        * Resumo do Ciclo de Vida
+
+            | Etapa         | Responsável                 | Ação principal                        | Logs obrigatórios         |
+            | ------------- | --------------------------- | ------------------------------------- | ------------------------- |
+            | Inicialização | Plugin + GerenciadorPlugins | Criação e configuração de instância   | INFO: start               |
+            | Execução      | Plugin                      | Processamento e análise de dados      | INFO: run start / run end |
+            | Persistência  | Plugin + GerenciadorBanco   | Armazenamento institucional dos dados | INFO / ERROR              |
+            | Comunicação   | Plugin + GerenciadorPlugins | Consumo de dependências               | DEBUG                     |
+            | Finalização   | Plugin                      | Encerramento e liberação de recursos  | INFO: stop                |
+            | Auditoria     | Todos                       | Registro completo de eventos          | INFO / ERROR              |
+
+
+***** Banco de Dados *****
+
+    # Regras para Banco de Dados:
+
+        1 - Cada plugin declara suas tabelas via `plugin_tabelas`
+        2 - Versionamento obrigatório (plugin_schema_versao)
+        3 - Modos de acesso claros (own/write/read)
+        4 - Validação automática na inicialização
+        5 - Migração controlada entre versões
+        6 - O schema.json é gerado e alimentado automaticamente
+        7 - As tabelas são nomeadas usando o seguinte padrão: nome_plugin_tabela
+
+
+    # Padrão mínimo esperado pelo schema_generator - cada plugin deve conter as suas próprias nuances:
+
+        * O campo schema define as colunas da tabela conforme sintaxe SQL padrão PostgreSQL.
+        * O campo modo_acesso informa se a tabela é exclusiva do plugin (own) ou compartilhada (shared).
+        * O campo plugin serve para rastrear qual plugin é o responsável por criar/gerenciar essa tabela.
+        * O campo descricao é opcional, mas ajuda na documentação e visualização futura.
+
+    # Como usar:
+
+        * nome_da_tabela: nome identificador da tabela no banco.
+        * descricao (opcional, mas recomendado): explica o que essa tabela armazena.
+        * modo_acesso: "own" se for só do plugin, "shared" se for comum entre vários.
+        * plugin: use self.PLUGIN_NAME para manter rastreabilidade automática.
+        * schema: dicionário onde a chave é o nome da coluna e o valor é o tipo SQL (pode conter constraints, ex: NOT NULL, DEFAULT, PRIMARY KEY).
+
+        @property
+        def plugin_tabelas(self) -> dict:
+            return {
+                "nome_da_tabela": {
+                    "descricao": "Breve descrição do propósito da tabela.",
+                    "modo_acesso": "own",  # ou 'shared'
+                    "plugin": self.PLUGIN_NAME,
+                    "schema": {
+                        "coluna1": "TIPO_SQL [CONSTRAINTS]",
+                        "coluna2": "TIPO_SQL [CONSTRAINTS]",
+                        "coluna3": "TIPO_SQL [CONSTRAINTS]",
+                        # ... adicione mais colunas conforme necessário
+                    }
+                }
+            }
+
+
+
+    # Padrão Institucional de Persistência de Dados entre Plugins e Banco
+
+        * Fluxo recomendado para persistência de dados (CRUD):
+
+        1. O plugin executa sua lógica e produz os dados a serem persistidos.
+        2. O plugin envia os dados ao GerenciadorBanco (ou ao orquestrador institucional) através de um método padronizado, ex: `gerenciador_banco.persistir_dados(plugin, tabela, dados)`.
+        3. O GerenciadorBanco valida, versiona e delega a operação ao plugin BancoDados (ou outro plugin de persistência), que executa o CRUD real.
+        4. O BancoDados executa a operação, faz logging, versionamento e retorna o resultado ao GerenciadorBanco, que pode repassar ao plugin de origem.
+
+        * Vantagens desse padrão:
+
+            1. Desacoplamento total: plugins não dependem diretamente do BancoDados.
+            2. Clareza e responsabilidade única: cada parte do sistema faz apenas o que lhe compete.
+            3. Testabilidade: fácil mockar o gerenciador em testes.
+            4. Evolução: backend de persistência pode mudar sem afetar plugins.
+            5. Rastreabilidade e versionamento centralizados.
+
+    * Exemplo de interface sugerida:
+
+        python
+        # No plugin:
+        resultado = self.gerenciador_banco.persistir_dados(
+            plugin=self.PLUGIN_NAME,
+            tabela="minha_tabela",
+            dados=meus_dados
+        )
+
+    # No GerenciadorBanco:
+        def persistir_dados(self, plugin, tabela, dados):
+            # Valida, versiona, loga e delega ao BancoDados
+            return self._banco_dados.inserir(tabela, dados)
+    
+
+    # Observações:
+        * O plugin nunca deve acessar diretamente o BancoDados.
+        * O GerenciadorBanco pode implementar lógica adicional de versionamento, auditoria, fallback, etc.
+        * O padrão deve ser seguido por todos os plugins que produzem dados a serem persistidos.
+
+
+***** Estrutura do Projeto *****
+
+    Bybit_Watcher/
+    ├── main.py
+    ├── .env
+    ├── regras_de_ouro.txt
+    │
+    ├── plugins/
+    │   ├── __init__.py
+    │   │
+    │   ├── indicadores/
+    │   │    ├── __init__.py
+    │   │    └── 
+    │   │
+    │   └── gerenciadores/
+    │         ├── __init__.py
+    │         ├── gerenciador.py
+    │         ├── gerenciador_banco.py
+    │         ├── gerenciador_bot.py
+    │         ├── gerenciador_log.py
+    │         └── gerenciador_plugins.py
+    │
+    ├── utils/
+    │   ├── __init__.py
+    │   └── config.py
+    │
+    └── logs/
+        ├── bot/
+        │   └── bot_DD-MM-YYYY.log
+        ├── dados/
+        │   └── dados_DD-MM-YYYY.log
+        ├── banco/
+        │   └── banco_DD-MM-YYYY.log
+        ├── rastreamento/
+        │   └── rastreamento_DD-MM-YYYY.log
+        ├── sinais/
+        │   └── sinais_DD-MM-YYYY.log
+        └── erros/
+            └── erros_DD-MM-YYYY.log
+
+
+***** Erros e Exceções *****
+
+    # Regra única: A manipulação de erros e exceções deve seguir um **padrão institucional** para garantir a **confiabilidade, rastreabilidade e isolamento de falhas** dentro do sistema. Cada plugin é responsável por tratar seus próprios erros, evitando que falhas locais afetem outros módulos.
+
+    1. Princípios Gerais
+
+        1. **Nunca deixar exceções não tratadas** atingirem o `GerenciadorPlugins` ou o `GerenciadorBot`.
+        2. **Tratar exceções o mais próximo possível da origem**, dentro do escopo funcional onde o erro ocorreu.
+        3. **Usar logging estruturado** para registrar qualquer evento inesperado.
+        4. **Nunca silenciar exceções sem registro** — toda falha deve ser logada.
+        5. **Evitar o uso genérico de `except Exception:`** sem controle; prefira capturas específicas (ex: `except ValueError`, `except ConnectionError`, etc.).
+
+    2. Estrutura Padrão de Tratamento
+
+        # Todo bloco de execução crítica deve seguir o formato abaixo:
+
+        python
+        try:
+            # Operação crítica (ex: cálculo, requisição, persistência)
+            resultado = self.executar_analise(dados)
+            self.logger.info(f"[{self.PLUGIN_NAME}] Execução concluída com sucesso.")
+        except (ConnectionError, TimeoutError) as e:
+            self.logger.warning(f"[{self.PLUGIN_NAME}] Problema de conexão: {e}")
+            self.tratar_retentativa()
+        except ValueError as e:
+            self.logger.error(f"[{self.PLUGIN_NAME}] Erro de valor: {e}")
+            self.tratar_dado_invalido()
+        except Exception as e:
+            self.logger.critical(f"[{self.PLUGIN_NAME}] Erro inesperado: {e}", exc_info=True)
+        finally:
+            self.finalizar_operacao()
+        
+
+        > Sempre use `exc_info=True` nos logs de erro inesperado para capturar o *stack trace* completo.
+
+
+    3. Uso de `try/finally` e Context Managers
+
+        O uso de blocos `try/finally` e métodos de contexto (`__enter__`, `__exit__`) é **obrigatório** para garantir limpeza de recursos, mesmo em caso de falha.
+
+        
+        try:
+            self.conexao = self.abrir_conexao()
+            # Processar dados
+        finally:
+            if self.conexao:
+                self.conexao.close()
+                self.logger.info(f"[{self.PLUGIN_NAME}] Conexão encerrada com segurança.")
+        
+
+        > Exemplo com contexto:
+        >
+        > python
+        > with self.gerenciador_banco.sessao() as sessao:
+        >     sessao.salvar(dados)
+        > 
+        >
+        > Isso garante que o fechamento da sessão ocorra automaticamente, mesmo se ocorrer erro.
+
+    4. Classificação de Logs de Erro
+
+        | Tipo de erro                                              | Nível de log | Ação recomendada                           |
+        | --------------------------------------------------------- | ------------ | ------------------------------------------ |
+        | Erros previstos (ex: dados inválidos)                     | `ERROR`      | Corrigir entrada ou validação              |
+        | Erros externos (ex: API, rede)                            | `WARNING`    | Retentar ou adiar execução                 |
+        | Erros críticos (ex: falha de lógica, exceção não tratada) | `CRITICAL`   | Interromper plugin e notificar gerenciador |
+        | Erros durante finalização                                 | `ERROR`      | Logar e garantir limpeza manual            |
+        | Falhas de persistência                                    | `ERROR`      | Logar e ativar fallback se possível        |
+
+    5. Integração com o Sistema de Logs
+
+        * Todos os erros devem ser registrados em `logs/erros/erros_DD-MM-YYYY.log`.
+        * Use prefixos claros para rastreabilidade:
+        
+        [PLUGIN_NAME] [TIPO_DE_ERRO] Mensagem detalhada
+        
+        * Exemplo:
+
+        
+        [IndicadorRSI] [CRITICAL] Erro inesperado ao processar candle: list index out of range
+        
+***** VERSIONAMENTO E DEPLOY *****
+        1. Versionamento de Plugins  
+            * Campo obrigatório: `plugin_versao = "vX.Y.Z"` (SemVer)  
+            * `MAJOR`: quebra de compatibilidade  
+            * `MINOR`: novas features  
+            * `PATCH`: correções  
+
+        2. Registro de Alterações  
+            * `CHANGELOG.md` institucional (raiz do projeto)  
+            * Formato:  
+                ```
+                    ## [v1.3.2] - 01/11/2025
+                    ### PluginIndicadorRSI
+                    - Corrigido cálculo em 1m
+                    - Adicionado fallback
+                ```
+
+        3. Migração de Schema  
+            1. GerenciadorBanco compara `plugin_schema_versao`  
+            2. Scripts em `plugins/migracoes/vX_to_vY_plugin.py`  
+            3. Execução automática na inicialização  
+            4. Teste obrigatório em staging  
+            5. Log: `[GerenciadorBanco] Migração v1.2 → v1.3 OK`
+
+    * RESPONSABILIDADES DOS GERENCIADORES – TABELA EXECUTIVA
+
+        | Gerenciador           | Responsabilidade Principal                            | Não Faz                             |
+        |-----------------------|-------------------------------------------------------|-------------------------------------|
+        | GerenciadorPlugins| Orquestra ciclo de vida, dependências, ordem          | Não acessa banco ou API                 |
+        | GerenciadorBanco  | Valida, versiona, migra, delega persistência          | Não executa CRUD real                   |
+        | GerenciadorBot    | Controle de trades, risco, TP/SL, alavancagem         | Não processa indicadores                |
+        | GerenciadorLog    | Centraliza logs, formatação, rotação, níveis          | Não filtra lógica de negócio            |        
