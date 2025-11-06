@@ -84,10 +84,40 @@ class PluginBancoDados(Plugin):
         
         # Configurações do banco (do config)
         db_config = self.config.get("db", {})
-        self.db_host = db_config.get("host", "localhost")
-        self.db_name = db_config.get("database", "smarttrader")
-        self.db_user = db_config.get("user")
-        self.db_password = db_config.get("password")
+        
+        # Normaliza credenciais para garantir codificação UTF-8 correta
+        def _normalizar_string(valor):
+            """Normaliza string para garantir codificação UTF-8."""
+            if valor is None:
+                return None
+            if isinstance(valor, bytes):
+                # Se for bytes, tenta decodificar como UTF-8, fallback para latin-1
+                try:
+                    return valor.decode("utf-8")
+                except UnicodeDecodeError:
+                    try:
+                        return valor.decode("latin-1")
+                    except UnicodeDecodeError:
+                        # Último fallback: ignora caracteres inválidos
+                        return valor.decode("utf-8", errors="ignore")
+            if isinstance(valor, str):
+                # Se for string, garante que está em UTF-8 válido
+                # Remove caracteres de controle e normaliza
+                try:
+                    # Tenta codificar/decodificar para garantir UTF-8 válido
+                    valor_limpo = valor.encode("utf-8", errors="replace").decode("utf-8")
+                    # Remove caracteres de controle não imprimíveis
+                    valor_limpo = "".join(char for char in valor_limpo if ord(char) >= 32 or char in "\n\r\t")
+                    return valor_limpo
+                except Exception:
+                    # Fallback: retorna string original se der erro
+                    return valor
+            return str(valor)
+        
+        self.db_host = _normalizar_string(db_config.get("host", "localhost"))
+        self.db_name = _normalizar_string(db_config.get("database", "smarttrader"))
+        self.db_user = _normalizar_string(db_config.get("user"))
+        self.db_password = _normalizar_string(db_config.get("password"))
         self.db_port = db_config.get("port", 5432)
         
         # Pool de conexões
@@ -115,15 +145,37 @@ class PluginBancoDados(Plugin):
                 return False
             
             # Cria pool de conexões
+            # Garante que todos os parâmetros sejam strings válidas antes de passar para psycopg2
             try:
+                # Converte explicitamente para string e garante UTF-8 válido
+                host = str(self.db_host) if self.db_host else "localhost"
+                database = str(self.db_name) if self.db_name else "smarttrader"
+                user = str(self.db_user) if self.db_user else None
+                password = str(self.db_password) if self.db_password else None
+                port = int(self.db_port) if self.db_port else 5432
+                
+                # Garante que todas as strings estão em UTF-8 válido
+                def _garantir_utf8(s):
+                    if s is None:
+                        return None
+                    if isinstance(s, str):
+                        # Força codificação UTF-8 válida
+                        return s.encode("utf-8", errors="replace").decode("utf-8")
+                    return str(s)
+                
+                host = _garantir_utf8(host)
+                database = _garantir_utf8(database)
+                user = _garantir_utf8(user)
+                password = _garantir_utf8(password)
+                
                 self.connection_pool = pool.ThreadedConnectionPool(
                     minconn=self.min_connections,
                     maxconn=self.max_connections,
-                    host=self.db_host,
-                    database=self.db_name,
-                    user=self.db_user,
-                    password=self.db_password,
-                    port=self.db_port,
+                    host=host,
+                    database=database,
+                    user=user,
+                    password=password,
+                    port=port,
                     connect_timeout=self.connection_timeout,
                 )
                 
