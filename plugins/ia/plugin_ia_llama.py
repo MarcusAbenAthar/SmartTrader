@@ -6,13 +6,11 @@ Transforma dados brutos do sistema 6/8 em conhecimento acionável através de:
 - Insights estratégicos (modo ativo)
 - Análise de padrões de mercado e comportamento do bot
 
-__institucional__ = "Bybit_Watcher Plugin IA Llama - Sistema 6/8 Unificado"
+__institucional__ = "Smart_Trader Plugin IA Llama - Sistema 6/8 Unificado"
 """
 
-import sqlite3
 from typing import Dict, Any, Optional, List
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 import json
 import os
 import requests
@@ -29,13 +27,13 @@ class PluginIaLlama(Plugin):
     - Ativo (on=True): Pode sugerir ajustes estratégicos
     
     Características:
-    - Banco SQLite local para histórico
+    - Persistência via PostgreSQL (GerenciadorBanco)
     - Consulta LLM (Llama 3 via API)
     - Não interfere nas decisões até ser explicitamente ativado
     - Registra tudo para rastreabilidade completa
     """
     
-    __institucional__ = "Bybit_Watcher Plugin IA Llama - Sistema 6/8 Unificado"
+    __institucional__ = "Smart_Trader Plugin IA Llama - Sistema 6/8 Unificado"
     
     PLUGIN_NAME = "PluginIaLlama"
     plugin_versao = "v1.0.0"
@@ -67,13 +65,6 @@ class PluginIaLlama(Plugin):
         )
         self.llama_model: str = self.config.get("ia", {}).get("model", "llama-3")
         
-        # Banco SQLite local para histórico
-        db_path = self.config.get("ia", {}).get(
-            "db_path", "data/ia_llama.db"
-        )
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
         # Buffer de dados para análise
         self._buffer_dados: List[Dict[str, Any]] = []
         self._buffer_tamanho_max = int(
@@ -90,7 +81,6 @@ class PluginIaLlama(Plugin):
         )
         
         # Estado interno
-        self._conexao_db: Optional[sqlite3.Connection] = None
         self._ultima_resposta_api: Optional[str] = None
         
     def _inicializar_interno(self) -> bool:
@@ -110,22 +100,19 @@ class PluginIaLlama(Plugin):
                     )
                 self.ia_on = False
             
-            # Inicializa banco SQLite
-            self._conexao_db = sqlite3.connect(
-                str(self.db_path),
-                check_same_thread=False,
-                timeout=30.0
-            )
-            self._conexao_db.row_factory = sqlite3.Row
-            
-            # Cria tabelas se não existirem
-            self._criar_tabelas()
+            # Valida GerenciadorBanco (necessário para persistência)
+            if not self.gerenciador_banco:
+                if self.logger:
+                    self.logger.warning(
+                        f"[{self.PLUGIN_NAME}] GerenciadorBanco não disponível. "
+                        "Persistência desabilitada."
+                    )
             
             if self.logger:
                 modo = "ATIVO" if self.ia_on else "PASSIVO"
                 self.logger.info(
                     f"[{self.PLUGIN_NAME}] Inicializado em modo {modo}. "
-                    f"Banco: {self.db_path}"
+                    "Persistência via PostgreSQL."
                 )
             
             return True
@@ -138,54 +125,6 @@ class PluginIaLlama(Plugin):
                 )
             return False
     
-    def _criar_tabelas(self):
-        """Cria tabelas necessárias no banco SQLite."""
-        cursor = self._conexao_db.cursor()
-        
-        # Tabela de insights
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS ia_insights (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME NOT NULL,
-                par TEXT NOT NULL,
-                modo TEXT NOT NULL,
-                insight TEXT NOT NULL,
-                dados_contexto TEXT,
-                sugestao TEXT,
-                aceita INTEGER DEFAULT 0,
-                versao_sistema TEXT,
-                criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Tabela de histórico de dados
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS ia_dados_historico (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME NOT NULL,
-                par TEXT NOT NULL,
-                ohlcv TEXT,
-                indicadores TEXT,
-                contagem_indicadores INTEGER,
-                resultado_trade TEXT,
-                contexto TEXT,
-                versao_sistema TEXT,
-                criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Índices para performance
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_insights_timestamp 
-            ON ia_insights(timestamp)
-        """)
-        
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_insights_par 
-            ON ia_insights(par)
-        """)
-        
-        self._conexao_db.commit()
     
     @property
     def plugin_tabelas(self) -> Dict[str, Dict[str, Any]]:
@@ -201,16 +140,16 @@ class PluginIaLlama(Plugin):
                 "modo_acesso": "own",
                 "plugin": self.PLUGIN_NAME,
                 "schema": {
-                    "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-                    "timestamp": "DATETIME NOT NULL",
-                    "par": "TEXT NOT NULL",
-                    "modo": "TEXT NOT NULL",
+                    "id": "SERIAL PRIMARY KEY",
+                    "timestamp": "TIMESTAMP NOT NULL DEFAULT NOW()",
+                    "par": "VARCHAR(50) NOT NULL",
+                    "modo": "VARCHAR(20) NOT NULL",
                     "insight": "TEXT NOT NULL",
-                    "dados_contexto": "TEXT",
+                    "dados_contexto": "JSONB",
                     "sugestao": "TEXT",
-                    "aceita": "INTEGER DEFAULT 0",
-                    "versao_sistema": "TEXT",
-                    "criado_em": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+                    "aceita": "BOOLEAN DEFAULT FALSE",
+                    "versao_sistema": "VARCHAR(20)",
+                    "criado_em": "TIMESTAMP DEFAULT NOW()",
                 }
             },
             "ia_dados_historico": {
@@ -218,16 +157,16 @@ class PluginIaLlama(Plugin):
                 "modo_acesso": "own",
                 "plugin": self.PLUGIN_NAME,
                 "schema": {
-                    "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-                    "timestamp": "DATETIME NOT NULL",
-                    "par": "TEXT NOT NULL",
-                    "ohlcv": "TEXT",
-                    "indicadores": "TEXT",
+                    "id": "SERIAL PRIMARY KEY",
+                    "timestamp": "TIMESTAMP NOT NULL DEFAULT NOW()",
+                    "par": "VARCHAR(50) NOT NULL",
+                    "ohlcv": "JSONB",
+                    "indicadores": "JSONB",
                     "contagem_indicadores": "INTEGER",
-                    "resultado_trade": "TEXT",
-                    "contexto": "TEXT",
-                    "versao_sistema": "TEXT",
-                    "criado_em": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+                    "resultado_trade": "JSONB",
+                    "contexto": "JSONB",
+                    "versao_sistema": "VARCHAR(20)",
+                    "criado_em": "TIMESTAMP DEFAULT NOW()",
                 }
             },
         }
@@ -327,24 +266,23 @@ class PluginIaLlama(Plugin):
         resultado_trade: Dict[str, Any],
         contexto: Dict[str, Any],
     ):
-        """Armazena dados brutos no banco SQLite."""
+        """Armazena dados brutos no PostgreSQL via GerenciadorBanco."""
+        if not self.gerenciador_banco:
+            return
+        
         try:
-            cursor = self._conexao_db.cursor()
-            cursor.execute("""
-                INSERT INTO ia_dados_historico 
-                (timestamp, par, ohlcv, indicadores, contagem_indicadores, resultado_trade, contexto, versao_sistema)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                datetime.now().isoformat(),
-                par,
-                json.dumps(ohlcv),
-                json.dumps(indicadores),
-                contagem,
-                json.dumps(resultado_trade),
-                json.dumps(contexto),
-                self.plugin_versao,
-            ))
-            self._conexao_db.commit()
+            dados = {
+                "timestamp": datetime.now(timezone.utc),
+                "par": par,
+                "ohlcv": ohlcv,
+                "indicadores": indicadores,
+                "contagem_indicadores": contagem,
+                "resultado_trade": resultado_trade,
+                "contexto": contexto,
+                "versao_sistema": self.plugin_versao,
+            }
+            
+            self.persistir_dados("ia_dados_historico", dados)
         except Exception as e:
             if self.logger:
                 self.logger.error(
@@ -693,23 +631,22 @@ Analise os dados e forneça insights estratégicos com sugestões de otimizaçã
         return insights
     
     def _armazenar_insight(self, insight: Dict[str, Any]):
-        """Armazena insight no banco SQLite."""
+        """Armazena insight no PostgreSQL via GerenciadorBanco."""
+        if not self.gerenciador_banco:
+            return
+        
         try:
-            cursor = self._conexao_db.cursor()
-            cursor.execute("""
-                INSERT INTO ia_insights 
-                (timestamp, par, modo, insight, dados_contexto, sugestao, versao_sistema)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                datetime.now().isoformat(),
-                insight.get("par", "UNKNOWN"),
-                insight.get("modo", "passivo"),
-                insight.get("insight", ""),
-                insight.get("dados_contexto", ""),
-                insight.get("sugestao"),
-                insight.get("versao_sistema", self.plugin_versao),
-            ))
-            self._conexao_db.commit()
+            dados = {
+                "timestamp": datetime.now(timezone.utc),
+                "par": insight.get("par", "UNKNOWN"),
+                "modo": insight.get("modo", "passivo"),
+                "insight": insight.get("insight", ""),
+                "dados_contexto": json.loads(insight.get("dados_contexto", "{}")) if isinstance(insight.get("dados_contexto"), str) else insight.get("dados_contexto", {}),
+                "sugestao": insight.get("sugestao"),
+                "versao_sistema": insight.get("versao_sistema", self.plugin_versao),
+            }
+            
+            self.persistir_dados("ia_insights", dados)
             
             if self.logger:
                 modo = insight.get("modo", "passivo")
@@ -770,33 +707,15 @@ Analise os dados e forneça insights estratégicos com sugestões de otimizaçã
                 - ultima_analise: Timestamp da última análise
         """
         try:
-            cursor = self._conexao_db.cursor()
-            
-            # Conta insights
-            cursor.execute("SELECT COUNT(*) as total FROM ia_insights")
-            total_insights = cursor.fetchone()["total"]
-            
-            # Conta dados históricos
-            cursor.execute("SELECT COUNT(*) as total FROM ia_dados_historico")
-            total_dados = cursor.fetchone()["total"]
-            
-            # Último insight
-            cursor.execute("""
-                SELECT timestamp FROM ia_insights 
-                ORDER BY timestamp DESC 
-                LIMIT 1
-            """)
-            ultimo = cursor.fetchone()
-            ultima_analise = ultimo["timestamp"] if ultimo else None
-            
+            # TODO: Implementar queries via GerenciadorBanco quando plugin BancoDados estiver pronto
+            # Por enquanto retorna estatísticas básicas do buffer
             return {
-                "total_insights": total_insights,
-                "total_dados_armazenados": total_dados,
+                "total_insights": 0,  # Será implementado via PostgreSQL
+                "total_dados_armazenados": 0,  # Será implementado via PostgreSQL
                 "buffer_atual": len(self._buffer_dados),
                 "buffer_size_max": self._buffer_tamanho_max,
                 "modo": "ativo" if self.ia_on else "passivo",
-                "ultima_analise": ultima_analise,
-                "banco_path": str(self.db_path),
+                "ultima_analise": None,  # Será implementado via PostgreSQL
             }
         except Exception as e:
             if self.logger:
@@ -817,11 +736,6 @@ Analise os dados e forneça insights estratégicos com sugestões de otimizaçã
                         "itens pendentes no buffer antes de finalizar"
                     )
                 self.processar_buffer_pendente()
-            
-            # Fecha conexão com banco
-            if self._conexao_db:
-                self._conexao_db.close()
-                self._conexao_db = None
             
             # Limpa buffer
             self._buffer_dados.clear()
@@ -855,31 +769,11 @@ Analise os dados e forneça insights estratégicos com sugestões de otimizaçã
         Returns:
             list: Lista de insights
         """
-        try:
-            cursor = self._conexao_db.cursor()
-            
-            if par:
-                cursor.execute("""
-                    SELECT * FROM ia_insights
-                    WHERE par = ?
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                """, (par, limite))
-            else:
-                cursor.execute("""
-                    SELECT * FROM ia_insights
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                """, (limite,))
-            
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.error(
-                    f"[{self.PLUGIN_NAME}] Erro ao obter insights: {e}",
-                    exc_info=True,
-                )
-            return []
+        # TODO: Implementar via GerenciadorBanco quando plugin BancoDados estiver pronto
+        if self.logger:
+            self.logger.warning(
+                f"[{self.PLUGIN_NAME}] obter_insights_recentes não implementado ainda. "
+                "Aguardando plugin BancoDados."
+            )
+        return []
 

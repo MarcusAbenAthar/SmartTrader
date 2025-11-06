@@ -4,7 +4,7 @@ Classe base para todos os plugins do sistema.
 Define o ciclo de vida padrão e interface comum para plugins.
 Todos os plugins devem herdar desta classe.
 
-__institucional__ = "Bybit_Watcher Core PluginBase - Compatível com sistema 6/8 Unificado"
+__institucional__ = "Smart_Trader Core PluginBase - Compatível com sistema 6/8 Unificado"
 
 Melhorias implementadas:
 - Controle de execução com método rodar() (wrapper de executar())
@@ -17,10 +17,64 @@ Melhorias implementadas:
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, Protocol, runtime_checkable, Callable
+from typing import Dict, Any, Optional, Protocol, runtime_checkable, Callable
 from datetime import datetime
 from functools import wraps
+from enum import Enum
 import logging
+
+
+# ============================================================
+# ENUM PARA STATUS DE EXECUÇÃO
+# ============================================================
+
+class StatusExecucao(Enum):
+    """
+    Enum para status de execução de plugins.
+    
+    Melhora legibilidade e evita strings soltas no código.
+    Útil para IA classificar e analisar resultados de execução.
+    """
+    OK = "ok"
+    ERRO = "erro"
+    AVISO = "aviso"
+    PENDENTE = "pendente"
+    CANCELADO = "cancelado"
+    
+    def __str__(self):
+        return self.value
+
+
+# ============================================================
+# NÍVEIS DE GRAVIDADE E AÇÕES AUTOMÁTICAS
+# ============================================================
+
+class NivelGravidade(Enum):
+    """
+    Níveis de gravidade para problemas detectados em plugins.
+    
+    Cada nível tem uma ação automática associada que o sistema
+    pode executar para tentar resolver o problema.
+    """
+    INFO = "info"  # Informativo, sem ação
+    WARNING = "warning"  # Aviso, log apenas
+    ERROR = "error"  # Erro, tenta recuperar automaticamente
+    CRITICAL = "critical"  # Crítico, reinicializa plugin
+    
+    def acao_automatica(self) -> str:
+        """
+        Retorna a ação automática para este nível de gravidade.
+        
+        Returns:
+            str: Descrição da ação automática
+        """
+        acoes = {
+            "info": "Nenhuma ação",
+            "warning": "Log de aviso",
+            "error": "Tentativa de recuperação automática",
+            "critical": "Reinicialização do plugin",
+        }
+        return acoes.get(self.value, "Nenhuma ação")
 
 
 # ============================================================
@@ -124,6 +178,35 @@ def execucao_segura(func: Callable) -> Callable:
 # CLASSE BASE PLUGIN
 # ============================================================
 
+# ============================================================
+# ÁRVORE HIERÁRQUICA DOS TIPOS DE PLUGIN
+# ============================================================
+
+class TipoPlugin(Enum):
+    """
+    Enum que define a hierarquia de tipos de plugin no sistema.
+    
+    Útil para IA classificar e organizar módulos automaticamente.
+    
+    Hierarquia:
+    - INDICADOR: Plugins que calculam indicadores técnicos (RSI, MACD, etc.)
+    - GERENCIADOR: Gerenciadores do sistema (Log, Banco, Plugins, Bot)
+    - CONEXAO: Plugins de conexão com APIs externas (Bybit, etc.)
+    - DADOS: Plugins que processam dados brutos (velas, dados de mercado)
+    - IA: Plugins de inteligência artificial (Llama, análise preditiva)
+    - AUXILIAR: Plugins auxiliares (utilitários, helpers)
+    """
+    INDICADOR = "indicador"
+    GERENCIADOR = "gerenciador"
+    CONEXAO = "conexao"
+    DADOS = "dados"
+    IA = "ia"
+    AUXILIAR = "auxiliar"
+    
+    def __str__(self):
+        return self.value
+
+
 class Plugin(ABC):
     """
     Classe base abstrata para todos os plugins do sistema.
@@ -138,17 +221,20 @@ class Plugin(ABC):
         PLUGIN_NAME (str): Nome único do plugin (obrigatório)
         plugin_versao (str): Versão do plugin no formato SemVer (vX.Y.Z)
         plugin_schema_versao (str): Versão do schema do banco (vX.Y.Z)
+        plugin_tipo (TipoPlugin): Tipo do plugin na hierarquia
+        plugin_metadados (dict): Metadados padrão (autor, data, dependências)
         dados_completos (dict): Estrutura {"crus": {}, "analisados": {}}
         logger: Instância do logger específico do plugin
         __institucional__ (str): Identificador institucional para introspecção
     """
     
     # Identificador institucional para introspecção pelo GerenciadorPlugins
-    __institucional__ = "Bybit_Watcher Core PluginBase - Compatível com sistema 6/8 Unificado"
+    __institucional__ = "Smart_Trader Core PluginBase - Compatível com sistema 6/8 Unificado"
 
     PLUGIN_NAME: str = "PluginBase"
     plugin_versao: str = "v1.0.0"
     plugin_schema_versao: str = "v1.0.0"
+    plugin_tipo: TipoPlugin = TipoPlugin.AUXILIAR
 
     def __init__(
         self,
@@ -183,6 +269,23 @@ class Plugin(ABC):
         
         # Logger (será inicializado no inicializar())
         self.logger: Optional[logging.Logger] = None
+        
+        # Metadados padrão do plugin (útil para IA classificar módulos)
+        self.plugin_metadados: Dict[str, Any] = {
+            "autor": self.config.get("plugin_autor", "SmartTrader Team"),
+            "data_criacao": self.config.get("plugin_data_criacao", datetime.now().isoformat()),
+            "data_atualizacao": datetime.now().isoformat(),
+            "dependencias": self.config.get("plugin_dependencias", []),
+            "tipo": self.plugin_tipo.value if hasattr(self, 'plugin_tipo') else TipoPlugin.AUXILIAR.value,
+            "descricao": self.config.get("plugin_descricao", ""),
+        }
+        
+        # Tolerância de erro temporal para monitoramento (em segundos)
+        # Útil para IA avaliar sincronização entre plugins
+        self.monitoramento_delay_maximo: float = self.config.get("monitoramento_delay_maximo", 0.3)
+        
+        # Nível de gravidade atual (usado para ações automáticas)
+        self._nivel_gravidade_atual: NivelGravidade = NivelGravidade.INFO
         
         # ============================================================
         # TELEMETRIA INTERNA (para GerenciadorBot tomar decisões)
@@ -259,6 +362,8 @@ class Plugin(ABC):
         
         Nota: Para uso direto, prefira rodar() que gerencia estado e logs automaticamente.
         
+        Para suporte assíncrono, use executar_async() quando disponível.
+        
         Args:
             dados_entrada: Dados de entrada (de outros plugins ou APIs externas)
             
@@ -266,6 +371,27 @@ class Plugin(ABC):
             dict: Resultado da execução com status e dados relevantes
         """
         pass
+    
+    async def executar_async(self, dados_entrada: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Versão assíncrona do método executar().
+        
+        Suporte nativo para execução assíncrona (async/await).
+        Útil quando threads forem substituídas por async workers.
+        
+        Por padrão, chama executar() de forma síncrona.
+        Sobrescreva este método em plugins filhos para implementar lógica assíncrona.
+        
+        Args:
+            dados_entrada: Dados de entrada (de outros plugins ou APIs externas)
+            
+        Returns:
+            dict: Resultado da execução com status e dados relevantes
+        """
+        import asyncio
+        # Executa método síncrono em thread pool para não bloquear
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.executar, dados_entrada)
 
     def antes_executar(self, dados_entrada: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
@@ -381,10 +507,24 @@ class Plugin(ABC):
 
             # Calcula duração
             duracao = (datetime.now() - self._timestamp_execucao).total_seconds()
-            status = resultado_final.get("status", "ok")
+            status_str = resultado_final.get("status", "ok")
+            
+            # Usa enum para status
+            try:
+                status = StatusExecucao(status_str)
+            except ValueError:
+                status = StatusExecucao.OK if status_str == "ok" else StatusExecucao.ERRO
+            
+            # Verifica delay máximo de monitoramento
+            if duracao > self.monitoramento_delay_maximo:
+                if self.logger:
+                    self.logger.warning(
+                        f"[{self.PLUGIN_NAME}] Delay de execução acima do máximo aceitável: "
+                        f"{duracao:.3f}s > {self.monitoramento_delay_maximo:.3f}s"
+                    )
             
             # Atualiza telemetria para sucesso
-            self._atualizar_telemetria(status="ok", duracao=duracao)
+            self._atualizar_telemetria(status=status.value, duracao=duracao)
 
             if self.logger:
                 self.logger.info(
@@ -397,8 +537,16 @@ class Plugin(ABC):
         except Exception as e:
             duracao = (datetime.now() - self._timestamp_execucao).total_seconds() if self._timestamp_execucao else 0
             
+            # Define nível de gravidade baseado no erro
+            self._nivel_gravidade_atual = NivelGravidade.ERROR
+            if "critical" in str(e).lower() or isinstance(e, SystemError):
+                self._nivel_gravidade_atual = NivelGravidade.CRITICAL
+            
+            # Executa ação automática se necessário
+            self._executar_acao_automatica()
+            
             # Atualiza telemetria para erro
-            self._atualizar_telemetria(status="erro", duracao=duracao)
+            self._atualizar_telemetria(status=StatusExecucao.ERRO.value, duracao=duracao)
             
             if self.logger:
                 self.logger.critical(
@@ -419,6 +567,54 @@ class Plugin(ABC):
             self._em_execucao = False
             self._timestamp_execucao = None
 
+    def _executar_acao_automatica(self):
+        """
+        Executa ação automática baseada no nível de gravidade atual.
+        
+        Ações:
+        - INFO/WARNING: Nenhuma ação
+        - ERROR: Tenta recuperação automática
+        - CRITICAL: Reinicializa o plugin
+        """
+        if self._nivel_gravidade_atual == NivelGravidade.CRITICAL:
+            if self.logger:
+                self.logger.critical(
+                    f"[{self.PLUGIN_NAME}] Nível CRITICAL detectado. "
+                    f"Executando ação automática: {self._nivel_gravidade_atual.acao_automatica()}"
+                )
+            # Reinicializa plugin
+            try:
+                self.finalizar()
+                self.inicializar()
+                if self.logger:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] Plugin reinicializado automaticamente"
+                    )
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(
+                        f"[{self.PLUGIN_NAME}] Erro ao reinicializar automaticamente: {e}",
+                        exc_info=True,
+                    )
+        elif self._nivel_gravidade_atual == NivelGravidade.ERROR:
+            if self.logger:
+                self.logger.warning(
+                    f"[{self.PLUGIN_NAME}] Nível ERROR detectado. "
+                    f"Tentando recuperação automática: {self._nivel_gravidade_atual.acao_automatica()}"
+                )
+            # Tenta recuperação (pode ser sobrescrito em plugins filhos)
+            self._tentar_recuperacao()
+    
+    def _tentar_recuperacao(self):
+        """
+        Tenta recuperação automática em caso de erro.
+        
+        Sobrescreva este método em plugins filhos para implementar
+        lógica de recuperação específica.
+        """
+        # Implementação padrão: apenas log
+        pass
+    
     def _atualizar_telemetria(self, status: str, duracao: float):
         """
         Atualiza as métricas internas de telemetria.
@@ -490,7 +686,55 @@ class Plugin(ABC):
         if tel["tempo_minimo"] == float('inf'):
             tel["tempo_minimo"] = 0.0
         
+        # Armazena telemetria no banco a cada execução (ou por lote)
+        # Gera estatísticas de aprendizado para IA
+        self._armazenar_telemetria_banco(tel)
+        
         return tel
+    
+    def _armazenar_telemetria_banco(self, telemetria: Dict[str, Any]):
+        """
+        Armazena telemetria no banco via gerenciador_banco.
+        
+        Gera estatísticas de aprendizado para IA analisar padrões de execução.
+        
+        Args:
+            telemetria: Dicionário com métricas de telemetria
+        """
+        try:
+            if not self.gerenciador_banco:
+                return
+            
+            # Prepara dados para persistência
+            dados_telemetria = {
+                "plugin": self.PLUGIN_NAME,
+                "timestamp": datetime.now().isoformat(),
+                "total_execucoes": telemetria.get("total_execucoes", 0),
+                "execucoes_sucesso": telemetria.get("execucoes_sucesso", 0),
+                "execucoes_erro": telemetria.get("execucoes_erro", 0),
+                "falhas_consecutivas": telemetria.get("falhas_consecutivas", 0),
+                "tempo_medio": telemetria.get("tempo_medio", 0.0),
+                "tempo_minimo": telemetria.get("tempo_minimo", 0.0),
+                "tempo_maximo": telemetria.get("tempo_maximo", 0.0),
+                "taxa_sucesso": telemetria.get("taxa_sucesso", 0.0),
+                "ultima_execucao": telemetria.get("ultima_execucao").isoformat() if telemetria.get("ultima_execucao") else None,
+                "ultimo_status": telemetria.get("ultimo_status"),
+                "nivel_gravidade": self._nivel_gravidade_atual.value,
+            }
+            
+            # Persiste via gerenciador_banco (pode ser em lote)
+            # Se gerenciador_banco tem método inserir direto, usa ele
+            if hasattr(self.gerenciador_banco, 'banco_dados') and self.gerenciador_banco.banco_dados:
+                self.gerenciador_banco.banco_dados.inserir("telemetria_plugins", dados_telemetria)
+            else:
+                self.persistir_dados("telemetria_plugins", dados_telemetria)
+            
+        except Exception as e:
+            # Não falha se não conseguir salvar telemetria
+            if self.logger:
+                self.logger.debug(
+                    f"[{self.PLUGIN_NAME}] Erro ao armazenar telemetria no banco: {e}"
+                )
 
     @property
     def plugin_tabelas(self) -> Dict[str, Dict[str, Any]]:
@@ -590,10 +834,23 @@ class Plugin(ABC):
         - Liberar recursos (arquivos, conexões, buffers)
         - Garantir consistência dos dados persistidos
         
+        IMPORTANTE: Não deve ser chamado durante o ciclo de execução normal!
+        Apenas no encerramento do sistema.
+        
         Returns:
             bool: True se finalizado com sucesso, False caso contrário.
+        
         """
         try:
+            import traceback
+            # Log de debug para identificar chamadas indevidas
+            if self.logger:
+                stack = ''.join(traceback.format_stack()[-3:-1])
+                self.logger.debug(
+                    f"[{self.PLUGIN_NAME}] finalizar() chamado. "
+                    f"Stack trace: {stack}"
+                )
+            
             # Chama finalização específica do plugin
             resultado = self._finalizar_interno()
             
@@ -665,6 +922,10 @@ class Plugin(ABC):
         
         Garante limpeza segura mesmo em caso de exceção durante a execução.
         
+        IMPORTANTE: Plugins com keep_alive=True não serão finalizados durante o
+        ciclo de execução normal. Apenas serão finalizados quando explicitamente
+        solicitado (finalização do sistema).
+        
         Args:
             exc_type: Tipo da exceção (None se não houve exceção)
             exc_val: Valor da exceção
@@ -673,16 +934,26 @@ class Plugin(ABC):
         Returns:
             bool: False para propagar exceção, True para suprimir
         """
-        # Sempre finaliza, mesmo se houve exceção
-        try:
-            if self._inicializado:
-                self.finalizar()
-        except Exception as e:
+        # Verifica se plugin tem keep_alive ativo (plugins de conexão persistente)
+        # Se tiver, não finaliza durante ciclo de execução
+        if hasattr(self, 'keep_alive') and self.keep_alive:
             if self.logger:
-                self.logger.error(
-                    f"[{self.PLUGIN_NAME}] Erro ao finalizar no context manager: {e}",
-                    exc_info=True,
+                self.logger.debug(
+                    f"[{self.PLUGIN_NAME}] Plugin com keep_alive ativo - "
+                    f"não finalizando durante ciclo de execução"
                 )
+            # Não finaliza, apenas retorna
+        else:
+            # Finaliza apenas se não tiver keep_alive
+            try:
+                if self._inicializado:
+                    self.finalizar()
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(
+                        f"[{self.PLUGIN_NAME}] Erro ao finalizar no context manager: {e}",
+                        exc_info=True,
+                    )
 
         # Se houve exceção durante a execução, loga mas não suprime
         if exc_type is not None:

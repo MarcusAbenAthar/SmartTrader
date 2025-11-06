@@ -136,23 +136,52 @@ class GerenciadorBot(GerenciadorBase):
                         "short": sinal_short,
                     }
 
-            # Validação 6/8
+            # Conta indicadores neutros (sem sinal claro)
+            total_indicadores = len(indicadores)
+            neutros = total_indicadores - long_count - short_count
+            
+            # Validação 6/8 com tratamento de empates
+            # Comportamento em caso de empate (ex: 5/8 ou 6/8 com um neutro):
+            # - 6/8 ou mais: Válido, direção definida
+            # - 5/8 com neutro: Considera empate, precisa de pelo menos 6/8
+            # - Empate exato (4L/4S): Inválido, reduz oscilações falsas
             valido = False
             direcao = None
-
+            motivo = None
+            
             if long_count >= 6:
                 valido = True
                 direcao = "LONG"
+                motivo = f"{long_count}/8 indicadores LONG"
             elif short_count >= 6:
                 valido = True
                 direcao = "SHORT"
+                motivo = f"{short_count}/8 indicadores SHORT"
+            elif long_count == 5 and short_count == 0 and neutros >= 3:
+                # 5/8 com neutros: aguarda confirmação (6/8 necessário)
+                valido = False
+                motivo = f"Empate: {long_count}/8 LONG com {neutros} neutros. Aguardando 6/8"
+            elif short_count == 5 and long_count == 0 and neutros >= 3:
+                # 5/8 com neutros: aguarda confirmação (6/8 necessário)
+                valido = False
+                motivo = f"Empate: {short_count}/8 SHORT com {neutros} neutros. Aguardando 6/8"
+            elif long_count == short_count and long_count > 0:
+                # Empate exato (ex: 4L/4S): Inválido para reduzir oscilações falsas
+                valido = False
+                motivo = f"Empate exato: {long_count}L/{short_count}S. Reduzindo oscilações falsas"
+            else:
+                # Menos de 6/8: Inválido
+                valido = False
+                motivo = f"Insufficiente: {long_count}L/{short_count}S/{neutros}N"
 
             resultado = {
                 "valido": valido,
                 "direcao": direcao,
                 "contagem_long": long_count,
                 "contagem_short": short_count,
+                "contagem_neutros": neutros,
                 "contagem": max(long_count, short_count),
+                "motivo": motivo,
                 "detalhes": detalhes,
             }
 
@@ -160,7 +189,7 @@ class GerenciadorBot(GerenciadorBase):
                 self.logger.debug(
                     f"[{self.GERENCIADOR_NAME}] Validação entrada: "
                     f"{direcao if valido else 'INVÁLIDO'} "
-                    f"({long_count}L/{short_count}S)"
+                    f"({long_count}L/{short_count}S/{neutros}N) - {motivo}"
                 )
 
             return resultado

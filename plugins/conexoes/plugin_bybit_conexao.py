@@ -4,7 +4,7 @@ Plugin de Conexão com a API Bybit.
 Gerencia conexão, autenticação e operações básicas com a exchange Bybit.
 Suporta testnet e mainnet conforme configuração.
 
-__institucional__ = "Bybit_Watcher Plugin Bybit Conexão - Sistema 6/8 Unificado"
+__institucional__ = "Smart_Trader Plugin Bybit Conexão - Sistema 6/8 Unificado"
 """
 
 import ccxt
@@ -33,7 +33,7 @@ class PluginBybitConexao(Plugin):
     - Thread-safe para uso concorrente
     """
     
-    __institucional__ = "Bybit_Watcher Plugin Bybit Conexão - Sistema 6/8 Unificado"
+    __institucional__ = "Smart_Trader Plugin Bybit Conexão - Sistema 6/8 Unificado"
     
     PLUGIN_NAME = "PluginBybitConexao"
     plugin_versao = "v1.0.0"
@@ -71,6 +71,9 @@ class PluginBybitConexao(Plugin):
         self._tentativas_reconexao: int = 0
         self._max_tentativas_reconexao: int = 3
         
+        # Keep alive - mantém conexão ativa
+        self.keep_alive: bool = True
+        
         # Rate limiting
         self._ultima_requisicao: float = 0.0
         self._delay_minimo_requisicoes: float = 0.1  # 100ms entre requisições
@@ -100,6 +103,9 @@ class PluginBybitConexao(Plugin):
                     'defaultType': self.market,  # linear, inverse, spot
                 },
             })
+            
+            # Mantém conexão ativa
+            self.keep_alive = True
             
             # Configura testnet se necessário
             if self.testnet:
@@ -253,10 +259,13 @@ class PluginBybitConexao(Plugin):
         """
         return {}
     
-    @execucao_segura
     def executar(self, dados_entrada: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Verifica status da conexão e atualiza estado interno.
+        
+        IMPORTANTE: Este método NÃO usa @execucao_segura porque este plugin
+        mantém conexão persistente durante todo o ciclo de execução.
+        A finalização só ocorre quando explicitamente solicitada.
         
         Args:
             dados_entrada: Opcional, não usado neste plugin
@@ -265,6 +274,15 @@ class PluginBybitConexao(Plugin):
             dict: Status da conexão
         """
         try:
+            # Garante que plugin está inicializado
+            if not self._inicializado:
+                if not self.inicializar():
+                    return {
+                        "status": "erro",
+                        "mensagem": "Falha ao inicializar conexão",
+                        "plugin": self.PLUGIN_NAME,
+                    }
+            
             # Verifica conexão periodicamente (a cada 30 segundos no mínimo)
             agora = datetime.now()
             if (not self._ultima_verificacao or 
@@ -345,8 +363,19 @@ class PluginBybitConexao(Plugin):
         }
     
     def _finalizar_interno(self) -> bool:
-        """Finaliza conexão com Bybit."""
+        """
+        Finaliza conexão com Bybit.
+        
+        IMPORTANTE: Este método só deve ser chamado no finalizar() do plugin,
+        nunca durante o ciclo de execução normal (quando keep_alive=True).
+        
+        O keep_alive impede a finalização automática via context manager durante
+        o ciclo de execução, mas não impede a finalização explícita via finalizar().
+        """
         try:
+            # Desabilita keep_alive antes de finalizar
+            self.keep_alive = False
+            
             # Fecha conexão se existir
             if self.exchange:
                 # ccxt não precisa de close explícito, mas limpa referência
@@ -367,4 +396,8 @@ class PluginBybitConexao(Plugin):
                     exc_info=True,
                 )
             return False
+    
+    def desabilitar_keep_alive(self):
+        """Desabilita keep_alive para permitir finalização."""
+        self.keep_alive = False
 

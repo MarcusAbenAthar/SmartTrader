@@ -1,5 +1,5 @@
 """
-Plugins de Inteligência Artificial do sistema Bybit_Watcher.
+Plugins de Inteligência Artificial do sistema Smart_Trader.
 
 Contém plugins que utilizam IA/ML para análise e insights:
 - plugin_ia_llama: Análise inteligente com Llama 3

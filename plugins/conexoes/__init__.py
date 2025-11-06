@@ -1,5 +1,5 @@
 """
-Plugins de Conexão do sistema Bybit_Watcher.
+Plugins de Conexão do sistema Smart_Trader.
 
 Contém plugins que gerenciam conexões com APIs externas:
 - plugin_bybit_conexao: Conexão e gerenciamento da API Bybit

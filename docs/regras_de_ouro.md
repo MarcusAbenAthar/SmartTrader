@@ -1,7 +1,7 @@
 Documento: Regras de Ouro
-Versão: 1
-Github: https://github.com/MarcusAbenAthar/Bybit_Watcher
-Última atualização: 01/11/2025
+Versão: 2
+Github: https://github.com/MarcusAbenAthar/Smart_Trader
+Última atualização: 05/11/2025
 
 
 
@@ -40,6 +40,12 @@ Github: https://github.com/MarcusAbenAthar/Bybit_Watcher
         15. Evitar mensagens vagas como “Ocorreu um erro” — sempre incluir contexto técnico.
         16. Testar exceções nos testes unitários usando `pytest.raises`.
         17. Garantir que toda exceção crítica seja reportada ao GerenciadorLog antes da finalização.
+        18. Usar enums para status de execução (StatusExecucao) em vez de strings soltas.
+        19. Incluir metadados de plugin (autor, data, dependências) para classificação pela IA.
+        20. Definir tipo de plugin (TipoPlugin) para hierarquia e organização automática.
+        21. Implementar níveis de gravidade (NivelGravidade) com ações automáticas associadas.
+        22. Configurar tolerância de erro temporal para monitoramento (padrão: 0.3s).
+        23. Armazenar telemetria no banco após cada execução para estatísticas de aprendizado.
 
     # Cada plugin segue:
 
@@ -49,6 +55,10 @@ Github: https://github.com/MarcusAbenAthar/Bybit_Watcher
         * Documentação completa
         * Finalização segura
         * Responsável por sua própria finalização
+        * Metadados padrão (autor, data, dependências, tipo)
+        * Suporte assíncrono nativo (executar_async)
+        * Telemetria automática armazenada no banco
+        * Níveis de gravidade com ações automáticas
 
     # Esta estrutura:
 
@@ -84,7 +94,17 @@ Github: https://github.com/MarcusAbenAthar/Bybit_Watcher
             Ler ou receber dados de entrada (de outros plugins ou de APIs externas);
             Processar, analisar e gerar resultados;
             Armazenar resultados intermediários em self.dados_completos (dividido entre crus e analisados);
-            Retornar o status de execução e/ou dados relevantes.
+            Retornar o status de execução usando enum StatusExecucao (OK, ERRO, AVISO, etc.);
+        
+        * Suporte assíncrono nativo:
+            - Método executar_async() disponível para execução assíncrona
+            - Útil quando threads forem substituídas por async workers
+            - Por padrão, executa método síncrono em thread pool
+        
+        * Monitoramento de performance:
+            - Tolerância de erro temporal configurável (padrão: 0.3s)
+            - Aviso quando execução excede delay máximo aceitável
+            - Telemetria armazenada automaticamente no banco após cada execução
 
     3. Persistência de Dados
 
@@ -224,7 +244,7 @@ Github: https://github.com/MarcusAbenAthar/Bybit_Watcher
 
 ***** Estrutura do Projeto *****
 
-    Bybit_Watcher/
+    Smart_Trader/
     ├── main.py
     ├── .env
     ├── regras_de_ouro.txt
@@ -322,13 +342,30 @@ Github: https://github.com/MarcusAbenAthar/Bybit_Watcher
         >
         > Isso garante que o fechamento da sessão ocorra automaticamente, mesmo se ocorrer erro.
 
-    4. Classificação de Logs de Erro
+    4. Classificação de Logs de Erro e Níveis de Gravidade
+
+        O sistema utiliza enum `NivelGravidade` com ações automáticas associadas:
+
+        | Nível de Gravidade | Ação Automática                           | Quando Usar                                  |
+        |-------------------|-------------------------------------------|----------------------------------------------|
+        | `INFO`            | Nenhuma ação                              | Operação normal, informativo                 |
+        | `WARNING`         | Log de aviso                              | Algo inesperado, mas resolvido automaticamente |
+        | `ERROR`           | Tentativa de recuperação automática       | Erro recuperável, tentar corrigir            |
+        | `CRITICAL`        | Reinicialização do plugin                 | Erro crítico, requer reinicialização        |
+
+        **Ações Automáticas:**
+        - **ERROR**: Chama método `_tentar_recuperacao()` (pode ser sobrescrito em plugins filhos)
+        - **CRITICAL**: Reinicializa plugin automaticamente (finalizar → inicializar)
+
+        **Status de Execução:**
+        - Use enum `StatusExecucao` (OK, ERRO, AVISO, PENDENTE, CANCELADO) em vez de strings
+        - Melhora legibilidade e facilita classificação pela IA
 
         | Tipo de erro                                              | Nível de log | Ação recomendada                           |
         | --------------------------------------------------------- | ------------ | ------------------------------------------ |
         | Erros previstos (ex: dados inválidos)                     | `ERROR`      | Corrigir entrada ou validação              |
         | Erros externos (ex: API, rede)                            | `WARNING`    | Retentar ou adiar execução                 |
-        | Erros críticos (ex: falha de lógica, exceção não tratada) | `CRITICAL`   | Interromper plugin e notificar gerenciador |
+        | Erros críticos (ex: falha de lógica, exceção não tratada) | `CRITICAL`   | Reinicialização automática do plugin       |
         | Erros durante finalização                                 | `ERROR`      | Logar e garantir limpeza manual            |
         | Falhas de persistência                                    | `ERROR`      | Logar e ativar fallback se possível        |
 
@@ -367,6 +404,90 @@ Github: https://github.com/MarcusAbenAthar/Bybit_Watcher
             3. Execução automática na inicialização  
             4. Teste obrigatório em staging  
             5. Log: `[GerenciadorBanco] Migração v1.2 → v1.3 OK`
+            6. Histórico de versões registrado automaticamente na tabela `schema_versoes`
+            7. Cada mudança de schema é rastreada com timestamp, descrição e migração SQL
+
+***** PADRÃO DE OPERAÇÕES CRUD *****
+
+    # Estrutura de Métodos do PluginBancoDados
+
+        O PluginBancoDados segue um padrão específico para organização de código:
+
+        * **Métodos Internos (com underscore)**:
+            - `_inserir_velas()` - Lógica específica para inserção de velas
+            - `_inserir_telemetria()` - Lógica específica para inserção de telemetria
+            - `_inserir_generico()` - Lógica genérica para inserção
+            - `_consultar()` - Lógica de consulta
+            - `_atualizar()` - Lógica de atualização
+            - `_deletar()` - Lógica de exclusão
+            - `_formatar_retorno()` - Formata retorno padronizado
+            - `_obter_conexao()` - Obtém conexão do pool
+            - `_devolver_conexao()` - Devolve conexão ao pool
+
+        * **Métodos Públicos (sem underscore)**:
+            - `inserir()` - Interface pública para inserção
+            - `consultar()` - Interface pública para consulta
+            - `atualizar()` - Interface pública para atualização
+            - `deletar()` - Interface pública para exclusão
+            - `atualizar_view_materializada()` - Atualiza view materializada
+
+    # Logs Padronizados
+
+        Todas as operações CRUD geram logs padronizados:
+
+        ```
+        [BancoDados][INSERT] Inserindo dados na tabela 'velas'
+        [BancoDados][INSERT] 1 registro(s) inserido(s) na tabela 'velas'
+        
+        [BancoDados][SELECT] Consultando tabela 'velas'
+        [BancoDados][SELECT] 60 registro(s) encontrado(s) na tabela 'velas'
+        
+        [BancoDados][UPDATE] Atualizando tabela 'velas'
+        [BancoDados][UPDATE] 1 registro(s) atualizado(s) na tabela 'velas'
+        
+        [BancoDados][DELETE] Deletando da tabela 'velas'
+        [BancoDados][DELETE] 1 registro(s) deletado(s) da tabela 'velas'
+        ```
+
+    # Retorno Padronizado
+
+        Todas as operações CRUD retornam um dicionário padronizado para facilitar integração com IA:
+
+        ```python
+        {
+            "sucesso": bool,              # True se operação foi bem-sucedida
+            "operacao": str,               # INSERT, UPDATE, SELECT, DELETE, REFRESH
+            "tabela": str,                 # Nome da tabela
+            "dados": Any,                  # Dados retornados (SELECT) ou inseridos/atualizados
+            "mensagem": str,               # Mensagem descritiva
+            "linhas_afetadas": int,        # Número de linhas afetadas
+            "erro": Optional[str],         # Mensagem de erro (se houver)
+            "timestamp": str               # Timestamp ISO da operação
+        }
+        ```
+
+        **Benefícios:**
+        - Facilita integração com IA (estrutura consistente)
+        - Facilita depuração (sempre sabe o que esperar)
+        - Facilita auditoria (timestamp em todas as operações)
+        - Facilita tratamento de erros (campo erro padronizado)
+
+    # Segurança em Operações CRUD
+
+        * **SQL Injection Prevention**:
+            - Uso de `sql.Identifier` para tabelas e colunas
+            - Uso de placeholders `%s` para valores
+            - Validação de tipos antes de inserção
+
+        * **Validação de Filtros**:
+            - UPDATE e DELETE **requerem filtros obrigatórios**
+            - Previne atualizações/deleções acidentais em toda a tabela
+            - Exemplo de erro: "Filtros não fornecidos (atualização sem filtros é perigosa)"
+
+        * **Validação de Dados**:
+            - Verificação de estrutura antes de inserção
+            - Validação de tipos e valores
+            - Rollback automático em caso de erro
 
     * RESPONSABILIDADES DOS GERENCIADORES – TABELA EXECUTIVA
 
@@ -376,3 +497,73 @@ Github: https://github.com/MarcusAbenAthar/Bybit_Watcher
         | GerenciadorBanco  | Valida, versiona, migra, delega persistência          | Não executa CRUD real                   |
         | GerenciadorBot    | Controle de trades, risco, TP/SL, alavancagem         | Não processa indicadores                |
         | GerenciadorLog    | Centraliza logs, formatação, rotação, níveis          | Não filtra lógica de negócio            |
+
+***** METADADOS E TIPOS DE PLUGIN *****
+
+    # Metadados Padrão de Plugin
+
+        Cada plugin deve incluir metadados padrão para classificação pela IA:
+
+        - **autor**: Autor do plugin (padrão: "SmartTrader Team")
+        - **data_criacao**: Data de criação do plugin (ISO format)
+        - **data_atualizacao**: Data da última atualização (atualizado automaticamente)
+        - **dependencias**: Lista de dependências explícitas do plugin
+        - **tipo**: Tipo do plugin na hierarquia (TipoPlugin enum)
+        - **descricao**: Descrição do propósito do plugin
+
+        Estes metadados são acessíveis via `self.plugin_metadados` e são úteis para:
+        - Classificação automática de módulos pela IA
+        - Rastreamento de dependências
+        - Documentação e introspecção
+
+    # Hierarquia de Tipos de Plugin
+
+        O sistema utiliza enum `TipoPlugin` para hierarquia e organização:
+
+        - **INDICADOR**: Plugins que calculam indicadores técnicos (RSI, MACD, etc.)
+        - **GERENCIADOR**: Gerenciadores do sistema (Log, Banco, Plugins, Bot)
+        - **CONEXAO**: Plugins de conexão com APIs externas (Bybit, etc.)
+        - **DADOS**: Plugins que processam dados brutos (velas, dados de mercado)
+        - **IA**: Plugins de inteligência artificial (Llama, análise preditiva)
+        - **AUXILIAR**: Plugins auxiliares (utilitários, helpers)
+
+        Útil para IA classificar e organizar módulos automaticamente.
+
+***** MONITORAMENTO E TELEMETRIA *****
+
+    # Tolerância de Erro Temporal
+
+        Cada plugin possui `monitoramento_delay_maximo` (padrão: 0.3s):
+        - Aviso quando execução excede delay máximo aceitável
+        - Útil para IA avaliar sincronização entre plugins
+        - Configurável via config ou no __init__ do plugin
+
+    # Armazenamento de Telemetria
+
+        Telemetria é armazenada automaticamente no banco após cada execução:
+        - Tabela `telemetria_plugins` armazena todas as métricas
+        - Gera estatísticas de aprendizado para IA
+        - Permite análise de performance e estabilidade ao longo do tempo
+
+        Métricas coletadas:
+        - Total de execuções, sucessos, erros
+        - Falhas consecutivas (alerta de instabilidade)
+        - Tempos médio, mínimo, máximo
+        - Taxa de sucesso
+        - Última execução e status
+        - Nível de gravidade atual
+
+***** SUPORTE ASSÍNCRONO *****
+
+    # Execução Assíncrona Nativa
+
+        Todos os plugins suportam execução assíncrona nativa:
+        - Método `executar_async()` disponível na classe base
+        - Por padrão, executa método síncrono em thread pool
+        - Plugins filhos podem sobrescrever para implementar lógica assíncrona real
+        - Útil quando threads forem substituídas por async workers
+
+        Exemplo de uso:
+        ```python
+        resultado = await plugin.executar_async(dados)
+        ```

@@ -1,5 +1,5 @@
 """
-Plugins do sistema Bybit_Watcher.
+Plugins do sistema Smart_Trader.
 
 Este pacote contém todos os plugins organizados em:
 - indicadores: Plugins de indicadores técnicos

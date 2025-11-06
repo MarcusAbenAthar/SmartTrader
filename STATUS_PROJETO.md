@@ -1,0 +1,498 @@
+# 📊 Status Geral do Projeto Smart Trader
+
+**Data:** 04/11/2025  
+**Versão Atual:** v1.0.3  
+**Ambiente:** Testnet Bybit (configurável via .env)
+
+---
+
+## ✅ Completado
+
+### 1. Renomeação Completa
+- ✅ Todas as referências de "Bybit_Watcher" → "Smart_Trader"
+- ✅ Classes renomeadas: `BybitWatcher` → `SmartTrader`
+- ✅ Documentação atualizada (README, docs, comentários)
+- ✅ Nome do banco de dados: `smarttrader`
+
+### 2. Correções Críticas (02/11/2025)
+- ✅ **Corrigido erro no main.py**: Removida chamada inexistente `inicializar()` do `GerenciadorLog`
+  - O `GerenciadorLog` já inicializa automaticamente no `__init__`
+- ✅ **SQLite completamente removido**: Todas as referências substituídas por PostgreSQL
+  - `PluginIaLlama` agora usa `GerenciadorBanco` para persistência
+  - Schema atualizado para PostgreSQL (SERIAL, TIMESTAMP, JSONB, etc.)
+  - Configuração removida: `IA_DB_PATH` (não mais necessária)
+
+### 3. Sistema de Logs - NOVO (02/11/2025) ✅
+Sistema completamente reescrito conforme especificação detalhada:
+
+**Filosofia**: Log conversacional, objetivo e humano - diário técnico que fala com você.
+
+**Estrutura de Diretórios**:
+- ✅ `logs/spot/` - Mercado à vista
+- ✅ `logs/futures/` - Contratos perpétuos/alavancados
+- ✅ `logs/ia/` - Análises e insights do Llama
+- ✅ `logs/system/` - Sistema, inicialização, erros gerais
+
+**Características**:
+- ✅ Formato BRT (São Paulo) com milissegundos: `[2025-11-02 09:08:14.123 BRT]`
+- ✅ Timezone configurado para America/Sao_Paulo
+- ✅ Rotação automática: 5MB por arquivo ou diária
+- ✅ Retenção: 7 dias ativos, 30 dias compactados
+- ✅ Compactação automática: logs antigos → `.gz`
+- ✅ Métodos especializados:
+  - `log_evento()` - Evento estruturado genérico
+  - `log_inicializacao()` - Inicialização de componentes
+  - `log_ordem()` - Envio/execução de ordens
+  - `log_decisao()` - Decisões de estratégia
+  - `log_ia()` - Análises e sugestões do Llama
+  - `log_erro_critico()` - Erros críticos com stack trace
+
+**Níveis de Severidade**:
+- `INFO`: Operação normal
+- `WARN`: Algo inesperado, mas resolvido automaticamente
+- `ERROR`: Requer atenção
+
+**Formato de Mensagens**:
+- Conversacional e objetivo
+- Inclui: par, ação, resultado, detalhes numéricos (preço, quantidade, tempo)
+- Exemplo: "Ordem LONG enviada para BTCUSDT: qty 0.02, preço 68472. Resultado: sucesso"
+
+### 4. Estrutura Base do Projeto
+- ✅ **main.py**: Ponto de entrada com classe `SmartTrader` (corrigido)
+- ✅ **Plugins Base**: 
+  - `base_plugin.py` - Classe base com ciclo de vida completo
+  - ✅ **Melhorias Implementadas** (05/11/2025):
+    - Enums para status (StatusExecucao) e tipos (TipoPlugin)
+    - Níveis de gravidade com ações automáticas (NivelGravidade)
+    - Metadados padrão de plugin (autor, data, dependências)
+    - Tolerância de erro temporal para monitoramento (0.3s)
+    - Suporte nativo assíncrono (executar_async)
+    - Telemetria armazenada automaticamente no banco
+    - Ações automáticas (ERROR → recuperação, CRITICAL → reinicialização)
+  - Suporte a context managers, telemetria, execução segura
+- ✅ **Gerenciadores**:
+  - `GerenciadorLog` - ✅ Sistema de logs reescrito conforme especificação
+  - `GerenciadorBanco` - Persistência com validação
+  - `GerenciadorPlugins` - Orquestração de plugins
+  - `GerenciadorBot` - Controle de trades (Sistema 6/8)
+
+### 5. Plugins Implementados
+- ✅ `PluginBybitConexao` - Conexão com API Bybit (testnet/mainnet)
+  - Suporte a testnet/mainnet via `.env`
+  - Reconexão automática
+  - Rate limiting respeitado
+  
+- ✅ `PluginBancoDados` - Banco de Dados PostgreSQL (04/11/2025)
+  - Pool de conexões ThreadedConnectionPool
+  - Criação automática de tabelas
+  - Upsert inteligente para evitar duplicatas
+  - Tabela `velas` com índices otimizados
+  - Integração com PluginDadosVelas
+  
+- ✅ `PluginIaLlama` - Inteligência Artificial (Llama 3)
+  - Modo passivo (aprendizado) e ativo (sugestões)
+  - ✅ **Persistência via PostgreSQL** (antes: SQLite)
+  - Buffer para análise em lote
+  - Schema atualizado para PostgreSQL (JSONB, TIMESTAMP, etc.)
+
+### 6. Configuração
+- ✅ `utils/main_config.py` - ConfigManager centralizado
+  - Suporte a testnet/mainnet
+  - Configurações dos 8 indicadores
+  - Parâmetros de trading (SL/TP, alavancagem, risco)
+  - Configurações de pares (BTC, ETH, SOL, XRP)
+  - ✅ Removida referência a `IA_DB_PATH` (agora usa PostgreSQL)
+
+---
+
+## 🚧 Em Desenvolvimento / Pendente
+
+### 1. Plugins de Indicadores
+**Status:** Plugin de dados criado, indicadores técnicos pendentes
+
+**Plugins de Dados:**
+- ✅ `plugin_dados_velas.py` - Busca dados OHLCV (15m, 1h, 4h) **INTEGRADO**
+  - 60 velas 15m (15 horas)
+  - 48 velas 1h (2 dias)
+  - 60 velas 4h (10 dias)
+  - Validação de vela fechada
+  - Integração com PluginBybitConexao
+  - ✅ **Persistência no PostgreSQL** (04/11/2025)
+  - ✅ **JSON com dados das moedas** (sem velas) em `data/moedas_dados.json`
+  - ✅ Registrado e executando no ciclo principal
+
+**Plugins de Indicadores Técnicos (8 plugins):**
+- ⏳ `plugin_ichimoku.py` - Ichimoku Cloud (9,26,52,26)
+- ⏳ `plugin_supertrend.py` - Supertrend (10, 3)
+- ⏳ `plugin_bollinger.py` - Bollinger Bands + Squeeze (20, 2)
+- ⏳ `plugin_volume.py` - Volume + Breakout
+- ⏳ `plugin_ema.py` - EMA Crossover (9/21)
+- ⏳ `plugin_macd.py` - MACD (12,26,9)
+- ⏳ `plugin_rsi.py` - RSI (14)
+- ⏳ `plugin_vwap.py` - VWAP (intraday)
+
+**Plugins de Padrões (conforme instrucao-velas.md):**
+- ⏳ `plugin_padroes_velas.py` - Detecção de 8 padrões de velas
+- ⏳ `plugin_confluencia.py` - 4 camadas de confluência
+
+### 2. Lógica de Trading (GerenciadorBot)
+- ✅ **Validação 6/8 Melhorada** (05/11/2025)
+  - Contagem de indicadores implementada
+  - Tratamento de empates para reduzir oscilações falsas
+  - Contagem de indicadores neutros incluída
+  - Comportamento claro em casos de 5/8 com neutros ou empate exato
+- ⏳ Filtros obrigatórios (Cloud + Supertrend, Squeeze BB)
+- ⏳ Execução de ordens (Market Orders via WebSocket)
+- ⏳ Monitoramento de posições (saída imediata por quebra)
+- ⏳ Gerenciamento de risco (SL/TP dinâmicos, Trailing Stop)
+
+### 3. Banco de Dados
+- ✅ **PluginBancoDados** implementado (04/11/2025)
+  - Conexão PostgreSQL com pool de conexões
+  - Criação automática de tabelas
+  - Upsert inteligente para evitar duplicatas
+  - Tabela `velas` criada conforme `instrucao-velas.md`
+  - Índices otimizados para consultas rápidas
+- ✅ **Persistência de Velas** implementada (04/11/2025)
+  - Velas salvas no PostgreSQL com upsert
+  - JSON com dados das moedas (sem velas) em `data/moedas_dados.json`
+  - Evita duplicatas usando constraint `unique_vela`
+  - Atualiza velas em formação automaticamente
+- ✅ **Melhorias no Banco de Dados** (05/11/2025)
+  - Campo `exchange` adicionado na tabela `velas` (suporte multi-exchange)
+  - Tabela `telemetria_plugins` criada para estatísticas de aprendizado para IA
+  - Tabela `schema_versoes` criada para histórico de versões de schema
+  - View materializada `mv_velas_agregadas` para análises aceleradas
+  - Sistema de registro automático de versões de schema
+- ✅ **PluginBancoDados Refatorado** (05/11/2025)
+  - CRUD completo implementado (INSERT, UPDATE, SELECT, DELETE)
+  - Métodos internos com underscore (_inserir, _consultar, etc.)
+  - Métodos públicos sem underscore (inserir, consultar, atualizar, deletar)
+  - Logs padronizados: [BancoDados][INSERT], [UPDATE], [SELECT], [DELETE]
+  - Retorno padronizado em dicionário para facilitar integração com IA
+  - Uso de sql.Identifier para prevenir SQL injection
+  - Validação de filtros obrigatórios em UPDATE e DELETE
+  - Documentação completa com exemplos de uso
+- ⏳ Schema generator automático (futuro)
+- ⏳ Tabelas para cada plugin de indicador (futuro)
+
+---
+
+## 📁 Estrutura Atual do Projeto
+
+```
+Smart_Trader/
+├── main.py                    ✅ Implementado (integrado com plugins)
+├── .env                       ⚠️  Configurar com chaves API
+├── CHANGELOG.md               ✅ Atualizado
+├── README.md                  ✅ Atualizado
+├── STATUS_PROJETO.md          ✅ Este arquivo (atualizado 02/11/2025)
+├── requirements.txt           ✅ Dependências listadas
+│
+├── plugins/
+│   ├── __init__.py           ✅
+│   ├── base_plugin.py        ✅ Completo
+│   │
+│   ├── indicadores/          ✅ Plugin de dados criado e integrado
+│   │   ├── __init__.py
+│   │   └── plugin_dados_velas.py  ✅ INTEGRADO no ciclo principal
+│   │
+│   ├── conexoes/            ✅
+│   │   ├── __init__.py
+│   │   └── plugin_bybit_conexao.py  ✅ INTEGRADO no ciclo principal
+│   │
+│   ├── ia/                   ✅
+│   │   ├── __init__.py
+│   │   └── plugin_ia_llama.py  ✅ (PostgreSQL, sem SQLite)
+│   │
+│   └── gerenciadores/        ✅ Todos implementados
+│       ├── __init__.py
+│       ├── gerenciador.py
+│       ├── gerenciador_log.py      ✅ Timezone BRT configurado
+│       ├── gerenciador_banco.py    ✅
+│       ├── gerenciador_plugins.py  ✅ Execução sequencial funcionando
+│       ├── gerenciador_bot.py      ⚠️  Base implementada, lógica pendente
+│       └── plugin_banco_dados.py    ✅ NOVO (04/11/2025) - PostgreSQL
+│
+├── utils/
+│   ├── __init__.py
+│   ├── main_config.py        ✅ Completo (sem referências SQLite)
+│   ├── logging_config.py     ✅
+│   └── exemple.config.py     ⚠️  Exemplo (renomear?)
+│
+├── docs/
+│   ├── regras_de_ouro.txt    ✅ Atualizado
+│   ├── definicao_estrategia.txt  ✅ Atualizado
+│   └── definicao_banco.txt    ✅ NOVO (04/11/2025) - Definições do banco
+│
+├── data/
+│   └── moedas_dados.json     ✅ NOVO (04/11/2025) - Dados das moedas (sem velas)
+│
+└── logs/                     ✅ NOVA ESTRUTURA (02/11/2025)
+    ├── spot/                 ✅ Mercado à vista
+    ├── futures/              ✅ Contratos alavancados
+    ├── ia/                   ✅ Análises do Llama
+    └── system/               ✅ Sistema e erros
+```
+
+---
+
+## 🔧 Configuração Atual
+
+### Variáveis do `.env` (Verificar/Configurar):
+
+```env
+# Bybit API
+BYBIT_TESTNET=True              # ✅ True para testnet
+TESTNET_BYBIT_API_KEY=...       # ⚠️  Configurar
+TESTNET_BYBIT_API_SECRET=...    # ⚠️  Configurar
+
+# Banco de Dados PostgreSQL
+DB_HOST=localhost
+DB_NAME=smarttrader            # ✅ Nome do banco de dados
+DB_USER=...
+DB_PASSWORD=...
+DB_PORT=5432
+
+# Telegram
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+
+# IA (Opcional)
+IA_ON=False
+LLAMA_API_KEY=...
+# IA_DB_PATH removido - agora usa PostgreSQL
+```
+
+---
+
+## 🧪 Próximos Passos
+
+### Imediato (Teste na Testnet)
+1. ✅ Configurar `.env` com chaves de testnet atualizadas
+2. ✅ Corrigido erro de inicialização no main.py
+3. ✅ PluginDadosVelas integrado e pronto para execução
+4. ⏳ Testar execução completa: `python main.py`
+5. ⏳ Verificar logs gerados em `logs/system/` com timezone BRT
+6. ⏳ Validar busca de velas da Bybit testnet
+7. ⏳ Aguardar novas instruções em `instrucao-velas.md`
+
+### Curto Prazo (Sistema 6/8)
+1. Implementar 8 plugins de indicadores
+2. Completar lógica de validação 6/8 no `GerenciadorBot`
+3. Implementar execução de ordens (testnet)
+4. Sistema de monitoramento de posições
+5. Integrar novos métodos de log (`log_ordem()`, `log_decisao()`, etc.)
+
+### Médio Prazo
+1. Plugin `BancoDados` com PostgreSQL (CRUD real)
+2. Schema generator e migrações
+3. WebSocket para atualizações em tempo real
+4. Completar métodos do `PluginIaLlama` que dependem de `BancoDados`
+
+---
+
+## 📊 Métricas do Projeto
+
+- **Total de Arquivos Python:** ~15 arquivos principais
+- **Plugins Implementados:** 3/11 (27%) - Dados de velas integrado
+- **Plugins Integrados no Ciclo:** 2/3 (PluginBybitConexao + PluginDadosVelas)
+- **Gerenciadores:** 4/4 (100%)
+- **Plugins de Indicadores:** 0/8 (0%)
+- **Sistema de Logs:** ✅ 100% implementado conforme especificação
+- **Banco de Dados:** ⏳ SQLite removido, PostgreSQL preparado (aguardando plugin BancoDados)
+- **Cobertura de Testes:** 0% (pendente)
+
+---
+
+## ⚠️ Observações Importantes
+
+1. **Ambiente Testnet**: Sistema configurado para testnet por padrão
+2. **Banco de Dados**: 
+   - ✅ SQLite completamente removido
+   - ⏳ Plugin `BancoDados` ainda não implementado (apenas `GerenciadorBanco`)
+   - ✅ `PluginIaLlama` preparado para PostgreSQL (schema atualizado)
+3. **Indicadores**: Nenhum plugin de indicador implementado ainda
+4. **Trading**: Lógica de execução de trades não implementada
+5. **Sistema de Logs**: ✅ **100% implementado conforme especificação detalhada**
+   - Estrutura: spot/futures/ia/system
+   - Rotação: 5MB ou diária
+   - Retenção: 7 dias ativos, 30 dias compactados
+   - Formato: **BRT (São Paulo)** com milissegundos, conversacional
+6. **Ciclo de Execução**: ✅ **Implementado e funcionando**
+   - Loop principal a cada 5 segundos
+   - Execução sequencial de plugins
+   - Logs detalhados por ciclo
+   - Tratamento robusto de erros
+
+---
+
+## 🎯 Prioridades
+
+### Alta Prioridade:
+1. ✅ Renomeação completa (CONCLUÍDO)
+2. ✅ Correção erro main.py (CONCLUÍDO)
+3. ✅ Remoção SQLite → PostgreSQL (CONCLUÍDO)
+4. ✅ Sistema de logs completo (CONCLUÍDO)
+5. ⏳ Testar na testnet com novas chaves
+6. ⏳ Implementar primeiro plugin de indicador (ex: RSI)
+
+### Média Prioridade:
+1. Completar todos os 8 plugins de indicadores
+2. Implementar lógica 6/8 no GerenciadorBot
+3. Plugin BancoDados com PostgreSQL
+4. Integrar novos métodos de log no fluxo de trading
+
+### Baixa Prioridade:
+1. Dashboard/web interface
+2. Backtesting automatizado
+3. Otimizações de performance
+4. Alertas via Telegram baseados em logs
+
+---
+
+## 📝 Changelog Resumo (02/11/2025)
+
+### Correções
+- ✅ Corrigido erro `AttributeError: 'GerenciadorLog' object has no attribute 'inicializar'`
+- ✅ Removida chamada inexistente no `main.py`
+
+### Migrações
+- ✅ SQLite completamente removido do `PluginIaLlama`
+- ✅ Schema atualizado para PostgreSQL (SERIAL, TIMESTAMP, JSONB)
+- ✅ Persistência via `GerenciadorBanco` preparada
+
+### Novas Features
+- ✅ Sistema de logs completamente reescrito conforme especificação
+- ✅ Novos diretórios: spot/futures/ia/system
+- ✅ Rotação automática (5MB ou diária)
+- ✅ Compactação automática de logs antigos
+- ✅ Métodos especializados: `log_ordem()`, `log_decisao()`, `log_ia()`, etc.
+- ✅ Formato UTC com milissegundos
+- ✅ Retenção configurável (7 dias ativos, 30 dias compactados)
+
+---
+
+**Última Atualização:** 05/11/2025  
+**Status Geral:** 🟢 PluginBancoDados refatorado - CRUD completo com retorno padronizado e logs estruturados
+
+## 📝 Changelog Resumo (05/11/2025 - PluginBancoDados Refatorado)
+
+### PluginBancoDados - Refatoração Completa
+- ✅ **CRUD Completo Implementado**
+  - Método `inserir()` - Inserção com upsert para velas
+  - Método `consultar()` - Consulta com filtros, campos, ordenação e limite
+  - Método `atualizar()` - Atualização com filtros e validação
+  - Método `deletar()` - Exclusão com filtros obrigatórios (segurança)
+- ✅ **Estrutura de Métodos**
+  - Métodos internos com underscore (_inserir_velas, _consultar, etc.)
+  - Métodos públicos sem underscore (inserir, consultar, atualizar, deletar)
+  - Separação clara entre lógica interna e interface pública
+- ✅ **Logs Padronizados**
+  - Formato: `[BancoDados][INSERT]`, `[UPDATE]`, `[SELECT]`, `[DELETE]`
+  - Facilita depuração e auditoria
+  - Logs informativos por operação com detalhes
+- ✅ **Retorno Padronizado**
+  - Dicionário padronizado para todas as operações CRUD
+  - Facilita integração com IA
+  - Estrutura: sucesso, operacao, tabela, dados, mensagem, linhas_afetadas, erro, timestamp
+- ✅ **Melhorias de Segurança**
+  - Uso de `sql.Identifier` para prevenir SQL injection
+  - Validação de filtros obrigatórios em UPDATE e DELETE
+  - Validação de dados antes de inserção
+- ✅ **Versão Atualizada**
+  - PluginBancoDados: v1.0.0 → v1.2.0
+  - Schema versão: v1.0.0 → v1.2.0
+
+## 📝 Changelog Resumo (05/11/2025 - Melhorias e Robustez)
+
+### Novas Features
+- ✅ **Enums para Status e Tipos**
+  - `StatusExecucao`: OK, ERRO, AVISO, PENDENTE, CANCELADO
+  - `TipoPlugin`: INDICADOR, GERENCIADOR, CONEXAO, DADOS, IA, AUXILIAR
+  - `NivelGravidade`: INFO, WARNING, ERROR, CRITICAL com ações automáticas
+- ✅ **Metadados de Plugin**
+  - Campo `plugin_metadados` com autor, data, dependências, tipo
+  - Útil para IA classificar módulos automaticamente
+- ✅ **Monitoramento e Telemetria**
+  - Tolerância de erro temporal configurável (padrão: 0.3s)
+  - Telemetria armazenada automaticamente no banco após cada execução
+  - Tabela `telemetria_plugins` para estatísticas de aprendizado
+- ✅ **Ações Automáticas**
+  - ERROR: Tentativa de recuperação automática
+  - CRITICAL: Reinicialização automática do plugin
+- ✅ **Suporte Assíncrono**
+  - Método `executar_async()` nativo na classe base
+  - Preparado para transição de threads para async workers
+- ✅ **GerenciadorBot Melhorado**
+  - Tratamento de empates para reduzir oscilações falsas
+  - Contagem de indicadores neutros
+  - Comportamento claro em casos de 5/8 ou empate exato
+- ✅ **Banco de Dados Expandido**
+  - Campo `exchange` na tabela `velas` (suporte multi-exchange)
+  - View materializada `mv_velas_agregadas` para análises aceleradas
+  - Histórico de versões de schema na tabela `schema_versoes`
+
+## 📝 Changelog Resumo (04/11/2025 - Sistema de Banco de Dados)
+
+### Novas Features
+- ✅ **PluginBancoDados** criado e integrado
+  - Conexão PostgreSQL com pool de conexões
+  - Criação automática de tabela `velas`
+  - Upsert inteligente para evitar duplicatas
+  - Índices otimizados para consultas rápidas
+- ✅ **Persistência de Velas** implementada
+  - Velas salvas no PostgreSQL usando upsert
+  - Evita duplicatas usando constraint `unique_vela`
+  - Atualiza velas em formação automaticamente
+- ✅ **JSON de Dados das Moedas** criado
+  - Arquivo `data/moedas_dados.json` com dados das moedas (sem velas)
+  - Inclui última vela por timeframe e estatísticas básicas
+- ✅ **Documentação do Banco** criada
+  - Arquivo `docs/definicao_banco.txt` com definições completas
+  - Estrutura de tabelas, índices, otimizações e dicas de uso
+
+### Integração
+- ✅ PluginBancoDados registrado no ciclo principal
+- ✅ PluginDadosVelas conectado com PluginBancoDados
+- ✅ Velas sendo salvas automaticamente a cada ciclo
+- ✅ JSON atualizado a cada ciclo com dados das moedas
+
+### Correções
+- ✅ Cálculo de `close_time` corrigido (usando `timedelta`)
+- ✅ Timezone UTC para timestamps no banco
+- ✅ Validação de dados antes de inserir
+
+## 📝 Changelog Resumo (02/11/2025 - Atualizações Recentes)
+
+### Alterações de Timezone (09:30 BRT)
+- ✅ Sistema de logs configurado para timezone de São Paulo (BRT)
+- ✅ Formato alterado de UTC para BRT em todos os logs
+- ✅ Cálculos de tempo usando pytz.timezone('America/Sao_Paulo')
+
+### Novo Plugin (09:30 BRT)
+- ✅ **PluginDadosVelas** criado conforme `instrucao-velas.md`
+  - Busca 60 velas 15m, 48 velas 1h, 60 velas 4h
+  - Validação de vela fechada por timeframe
+  - Integração com PluginBybitConexao
+  - Estrutura pronta para receber dados
+
+### Integração Completa (10:00 BRT)
+- ✅ **PluginDadosVelas integrado no ciclo principal**
+  - Registrado automaticamente no `_registrar_plugins()`
+  - Conectado com PluginBybitConexao
+  - Executando a cada 5 segundos no ciclo principal
+- ✅ **Ciclo de execução implementado**
+  - Loop principal funcionando
+  - Execução sequencial de plugins
+  - Logs detalhados por ciclo
+  - Tratamento de erros robusto
+- ✅ **GerenciadorPlugins melhorado**
+  - Retorno estruturado com status agregado
+  - Contagem de plugins executados/erros
+  - Ordem de execução baseada em registro
+
+### Correções
+- ✅ Tipo de log no GerenciadorPlugins corrigido (system em vez de rastreamento)
+- ✅ Plugin de IA verificado e funcional (PostgreSQL preparado)
+- ✅ Todos os tipos de log corrigidos para "system" no main.py

@@ -73,7 +73,7 @@ class GerenciadorPlugins(GerenciadorBase):
         try:
             if self.gerenciador_log:
                 self.logger = self.gerenciador_log.get_logger(
-                    self.GERENCIADOR_NAME, "rastreamento"
+                    self.GERENCIADOR_NAME, "system"
                 )
             
             if self.logger:
@@ -168,10 +168,21 @@ class GerenciadorPlugins(GerenciadorBase):
                     self.logger.error(
                         f"[{self.GERENCIADOR_NAME}] Gerenciador não inicializado"
                     )
-                return {}
+                return {
+                    "status": "erro",
+                    "mensagem": "Gerenciador não inicializado",
+                    "plugins_executados": [],
+                    "plugins_com_erro": [],
+                    "resultados": {},
+                    "total_plugins": 0,
+                    "total_executados": 0,
+                    "total_erros": 0,
+                }
 
             resultados = {}
             dados_atuais = dados_entrada or {}
+            plugins_executados = []
+            plugins_com_erro = []
 
             # Calcula ordem de execução se necessário
             if not self.ordem_execucao:
@@ -185,39 +196,77 @@ class GerenciadorPlugins(GerenciadorBase):
                 plugin = self.plugins[nome_plugin]
 
                 try:
-                    plugin._em_execucao = True
+                    # Verifica se plugin já está em execução
+                    if plugin.esta_em_execucao:
+                        if self.logger:
+                            self.logger.warning(
+                                f"[{self.GERENCIADOR_NAME}] Plugin '{nome_plugin}' já está em execução. Pulando..."
+                            )
+                        continue
                     
                     if self.logger:
                         self.logger.debug(
                             f"[{self.GERENCIADOR_NAME}] Executando plugin '{nome_plugin}'"
                         )
 
+                    # Executa plugin (executar() já tem @execucao_segura quando aplicável)
                     resultado = plugin.executar(dados_atuais)
                     resultados[nome_plugin] = resultado
-
-                    # Atualiza dados para próximo plugin
-                    if resultado and isinstance(resultado, dict):
-                        dados_atuais.update(resultado)
                     
-                    plugin._em_execucao = False
+                    # Verifica status
+                    if resultado and isinstance(resultado, dict):
+                        if resultado.get("status") == "ok":
+                            plugins_executados.append(nome_plugin)
+                        elif resultado.get("status") == "erro":
+                            plugins_com_erro.append(nome_plugin)
+                        
+                        # Atualiza dados para próximo plugin (apenas dados válidos)
+                        if resultado.get("status") == "ok":
+                            dados_atuais.update(resultado)
+                    else:
+                        plugins_executados.append(nome_plugin)
                 except Exception as e:
-                    plugin._em_execucao = False
+                    plugins_com_erro.append(nome_plugin)
                     if self.logger:
                         self.logger.error(
                             f"[{self.GERENCIADOR_NAME}] Erro ao executar plugin "
                             f"'{nome_plugin}': {e}",
                             exc_info=True,
                         )
-                    resultados[nome_plugin] = {"erro": str(e)}
+                    resultados[nome_plugin] = {
+                        "status": "erro",
+                        "mensagem": str(e),
+                        "plugin": nome_plugin
+                    }
 
-            return resultados
+            # Retorna resultado agregado
+            status_geral = "ok" if not plugins_com_erro else "erro_parcial" if plugins_executados else "erro"
+            
+            return {
+                "status": status_geral,
+                "plugins_executados": plugins_executados,
+                "plugins_com_erro": plugins_com_erro,
+                "resultados": resultados,
+                "total_plugins": len(self.plugins),
+                "total_executados": len(plugins_executados),
+                "total_erros": len(plugins_com_erro),
+            }
         except Exception as e:
             if self.logger:
                 self.logger.critical(
                     f"[{self.GERENCIADOR_NAME}] Erro crítico ao executar plugins: {e}",
                     exc_info=True,
                 )
-            return {}
+            return {
+                "status": "erro",
+                "mensagem": str(e),
+                "plugins_executados": [],
+                "plugins_com_erro": list(self.plugins.keys()),
+                "resultados": {},
+                "total_plugins": len(self.plugins),
+                "total_executados": 0,
+                "total_erros": len(self.plugins),
+            }
 
     def _calcular_ordem_execucao(self):
         """

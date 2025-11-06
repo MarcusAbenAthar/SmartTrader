@@ -83,6 +83,22 @@
 
         > **Entrada:** Contagem ≥ 6 → EXECUTA ORDEM DE MERCADO
 
+    # TRATAMENTO DE EMPATES (reduz oscilações falsas)
+
+        O sistema agora trata explicitamente casos de empate para reduzir oscilações falsas:
+
+        | Situação                    | Comportamento                                         |
+        |----------------------------|-------------------------------------------------------|
+        | **6/8 ou mais**            | Válido, direção definida (LONG ou SHORT)             |
+        | **5/8 com neutros ≥3**     | Considera empate, aguarda confirmação (6/8 necessário) |
+        | **Empate exato (4L/4S)**   | Inválido, reduz oscilações falsas                    |
+        | **Menos de 6/8**           | Inválido, insuficiente para entrada                  |
+
+        **Exemplos:**
+        - 5L/0S/3N → Empate: 5/8 LONG com 3 neutros. Aguardando 6/8
+        - 4L/4S/0N → Empate exato: 4L/4S. Reduzindo oscilações falsas
+        - 6L/1S/1N → Válido: 6/8 LONG confirmado
+
     # FLUXO DO BOT (ordem EXATA por thread)
 
         1. [Filtro Estrutural] Cloud + Supertrend OK? → NÃO → DESCARTA  
@@ -124,7 +140,7 @@
             - Volume > $100M → 15m | 3x | até 1.5%  
             - Volume $50M–$100M → 15m | 2x | até 1.0%  
             - Volume < $50M → 5m | 2x | até 0.7%
-    # COMPATIBILIDADE COM O BYBIT_WATCHER
+    # COMPATIBILIDADE COM O SMART_TRADER
 
         # Plugins por Indicador (em `plugins/indicadores/`):  
             1. Ichimoku Cloud → `plugin_ichimoku.py`  

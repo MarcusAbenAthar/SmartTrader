@@ -1,0 +1,5 @@
+{
+    "python.defaultInterpreterPath": "./.venv",
+    "python.terminal.activateEnvironment": true,
+    "terminal.integrated.shellIntegration.enabled": true
+  }

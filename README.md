@@ -1,4 +1,4 @@
-# Bybit_Watcher - Sistema 6/8 Trading Bot
+# Smart_Trader - Sistema 6/8 Trading Bot
 
 Bot de trading automatizado para Bybit utilizando 8 indicadores técnicos com validação cruzada (Sistema 6/8).
 
@@ -20,7 +20,7 @@ O sistema utiliza 8 indicadores técnicos e executa trades quando **6 ou mais** 
 ## 🏗️ Estrutura do Projeto
 
 ```
-Bybit_Watcher/
+Smart_Trader/
 ├── main.py                 # Ponto de entrada principal
 ├── .env                    # Configurações sensíveis (não versionado)
 ├── CHANGELOG.md            # Histórico de alterações
@@ -68,8 +68,8 @@ Bybit_Watcher/
 ### 1. Clone o repositório
 
 ```bash
-git clone https://github.com/MarcusAbenAthar/Bybit_Watcher.git
-cd Bybit_Watcher
+git clone https://github.com/MarcusAbenAthar/Smart_Trader.git
+cd Smart_Trader
 ```
 
 ### 2. Instale as dependências
@@ -92,7 +92,7 @@ TESTNET_BYBIT_API_SECRET=sua_testnet_api_secret  # Se usar testnet
 
 # Banco de Dados PostgreSQL
 DB_HOST=localhost
-DB_NAME=bybit_watcher
+DB_NAME=smarttrader
 DB_USER=seu_usuario
 DB_PASSWORD=sua_senha
 
@@ -188,7 +188,7 @@ Ver arquivo `LICENSE` para detalhes.
 
 ## 🔗 Links
 
-- Repositório: https://github.com/MarcusAbenAthar/Bybit_Watcher
+- Repositório: https://github.com/MarcusAbenAthar/Smart_Trader
 - Documentação: `docs/`
 
 ## 🤝 Contribuindo

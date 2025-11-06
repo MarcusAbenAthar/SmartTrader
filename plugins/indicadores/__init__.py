@@ -10,7 +10,12 @@ Contém os 8 indicadores do sistema 6/8:
 6. MACD (plugin_macd.py)
 7. RSI (plugin_rsi.py)
 8. VWAP (plugin_vwap.py)
+
+E plugins de dados e validação:
+- PluginDadosVelas (plugin_dados_velas.py)
 """
 
-__all__ = []
+from plugins.indicadores.plugin_dados_velas import PluginDadosVelas
+
+__all__ = ["PluginDadosVelas"]
 
