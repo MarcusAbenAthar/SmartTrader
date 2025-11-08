@@ -465,6 +465,9 @@ class PluginDadosVelas(Plugin):
                         velas = dados_tf.get("velas", [])
                         
                         for vela in velas:
+                            # Obtém valor de testnet da configuração
+                            testnet = self.config.get("bybit", {}).get("testnet", False)
+                            
                             velas_para_salvar.append({
                                 "ativo": par,
                                 "timeframe": tf,
@@ -475,6 +478,7 @@ class PluginDadosVelas(Plugin):
                                 "close": vela["close"],
                                 "volume": vela["volume"],
                                 "fechada": vela.get("fechada", True),
+                                "testnet": testnet,  # Campo para distinguir testnet/mainnet
                             })
             
             # Salva em lote usando upsert

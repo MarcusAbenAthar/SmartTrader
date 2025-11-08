@@ -8,7 +8,7 @@ Gerencia persistência de dados com:
 - Interface padronizada para plugins
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from plugins.gerenciadores.gerenciador import GerenciadorBase
 from plugins.gerenciadores.gerenciador_log import GerenciadorLog
 import json

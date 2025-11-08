@@ -153,7 +153,7 @@ class SmartTrader:
             print("[SmartTrader] PluginBybitConexao registrado")
             
             # 2. Registra PluginBancoDados
-            from plugins.gerenciadores.plugin_banco_dados import PluginBancoDados
+            from plugins.plugin_banco_dados import PluginBancoDados
             
             plugin_banco_dados = PluginBancoDados(
                 gerenciador_log=self.gerenciador_log,

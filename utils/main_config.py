@@ -403,6 +403,25 @@ class ConfigManager:
         }
 
         # ============================================================
+        # FUNÇÃO AUXILIAR PARA NORMALIZAÇÃO DE VALORES
+        # ============================================================
+        def _normalizar_valor_env(chave, padrao=None):
+            """Normaliza valor de variável de ambiente para UTF-8 válido."""
+            valor = os.getenv(chave, padrao)
+            if valor is None:
+                return None
+            if isinstance(valor, str):
+                # Remove espaços e garante UTF-8 válido
+                valor = valor.strip()
+                try:
+                    # Tenta codificar/decodificar para garantir UTF-8 válido
+                    return valor.encode('utf-8', errors='replace').decode('utf-8')
+                except Exception:
+                    # Fallback: remove caracteres problemáticos
+                    return valor.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+            return str(valor)
+        
+        # ============================================================
         # MONTAÇÃO DO DICIONÁRIO DE CONFIGURAÇÃO
         # ============================================================
         config = {
@@ -447,12 +466,12 @@ class ConfigManager:
                 "base_url": base_url,
             },
             
-            # Configurações do banco de dados
+            # Configurações do banco de dados (normalizadas para UTF-8 válido)
             "db": {
-                "host": os.getenv("DB_HOST"),
-                "database": os.getenv("DB_NAME"),
-                "user": os.getenv("DB_USER"),
-                "password": os.getenv("DB_PASSWORD"),
+                "host": _normalizar_valor_env("DB_HOST"),
+                "database": _normalizar_valor_env("DB_NAME"),
+                "user": _normalizar_valor_env("DB_USER"),
+                "password": _normalizar_valor_env("DB_PASSWORD"),
                 "port": int(os.getenv("DB_PORT", "5432")),  # PostgreSQL padrão: 5432
                 "schema_path": SCHEMA_JSON_PATH,
             },

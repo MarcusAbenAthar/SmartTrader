@@ -42,7 +42,7 @@ db_config = config.get("db", {})
 
 O plugin `PluginBancoDados` gerencia toda a conexão e operações com PostgreSQL:
 
-- **Localização**: `plugins/gerenciadores/plugin_banco_dados.py`
+- **Localização**: `plugins/plugin_banco_dados.py`
 - **Pool de Conexões**: ThreadedConnectionPool (psycopg2)
   - Mínimo: 1 conexão
   - Máximo: 5 conexões
@@ -81,13 +81,16 @@ CREATE TABLE velas (
     close NUMERIC(20,8) NOT NULL,
     volume NUMERIC(20,8) NOT NULL,
     fechada BOOLEAN DEFAULT TRUE,         -- Se vela foi fechada
+    testnet BOOLEAN DEFAULT FALSE,        -- Campo para distinguir testnet/mainnet
     criado_em TIMESTAMP DEFAULT NOW(),
     atualizado_em TIMESTAMP DEFAULT NOW(),
     
-    -- Chave única para evitar duplicatas (inclui exchange)
-    CONSTRAINT unique_vela UNIQUE (exchange, ativo, timeframe, open_time)
+    -- Chave única para evitar duplicatas (inclui exchange e testnet)
+    CONSTRAINT unique_vela UNIQUE (exchange, ativo, timeframe, open_time, testnet)
 );
 ```
+<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>
+read_file
 
 ### Índices
 
@@ -108,13 +111,19 @@ CREATE INDEX idx_vela_open_time ON velas(open_time);
 
 -- Índice para consultas por exchange
 CREATE INDEX idx_vela_exchange ON velas(exchange);
+
+-- Índice para consultas por testnet (filtrar testnet/mainnet)
+CREATE INDEX idx_vela_testnet ON velas(testnet);
 ```
+<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>
+grep
 
 ### Constraint de Unicidade
 
 A constraint `unique_vela` garante que:
-- Não há duplicatas de velas (mesmo exchange, ativo, timeframe, open_time)
+- Não há duplicatas de velas (mesmo exchange, ativo, timeframe, open_time, testnet)
 - Suporta multi-exchange (se um dia o bot operar em múltiplas exchanges)
+- Distingue dados de testnet e mainnet
 - Evita milhões de linhas inúteis no banco
 - Permite upsert eficiente
 
@@ -124,6 +133,14 @@ O campo `exchange` foi adicionado para suporte futuro a múltiplas exchanges:
 - **Padrão**: 'bybit' (configurável)
 - **Benefício**: Permite operar em múltiplas exchanges sem conflitos
 - **Constraint**: Incluído na chave única para evitar duplicatas entre exchanges
+
+### Campo Testnet
+
+O campo `testnet` foi adicionado para distinguir dados de testnet e mainnet:
+- **Padrão**: FALSE (mainnet)
+- **Benefício**: Permite manter dados de testnet e mainnet separados no mesmo banco
+- **Constraint**: Incluído na chave única para evitar conflitos entre ambientes
+- **Uso**: Quando `BYBIT_TESTNET=True` no `.env`, velas são salvas com `testnet=TRUE`
 
 ---
 
@@ -146,9 +163,9 @@ Conforme `instrucao-velas.md`:
 ```sql
 INSERT INTO velas (
     exchange, ativo, timeframe, open_time, close_time,
-    open, high, low, close, volume, fechada
+    open, high, low, close, volume, fechada, testnet
 ) VALUES %s
-ON CONFLICT (exchange, ativo, timeframe, open_time) 
+ON CONFLICT (exchange, ativo, timeframe, open_time, testnet) 
 DO UPDATE SET
     close_time = EXCLUDED.close_time,
     open = EXCLUDED.open,
@@ -161,6 +178,8 @@ DO UPDATE SET
 WHERE velas.close != EXCLUDED.close 
    OR velas.volume != EXCLUDED.volume;
 ```
+<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>
+grep
 
 ### Benefícios
 
@@ -384,6 +403,7 @@ SELECT
     exchange,
     ativo,
     timeframe,
+    testnet,
     DATE_TRUNC('hour', open_time) as hora,
     COUNT(*) as total_velas,
     AVG(close) as media_close,
@@ -397,11 +417,11 @@ SELECT
     AVG(high - low) as media_range
 FROM velas
 WHERE fechada = TRUE
-GROUP BY exchange, ativo, timeframe, DATE_TRUNC('hour', open_time);
+GROUP BY exchange, ativo, timeframe, testnet, DATE_TRUNC('hour', open_time);
 ```
 
 **Índice:**
-- `idx_mv_velas_agregadas`: (exchange, ativo, timeframe, hora) - Consultas rápidas
+- `idx_mv_velas_agregadas`: (exchange, ativo, timeframe, testnet, hora) - Consultas rápidas
 
 **Uso:**
 - Acelera análises da IA sem recalcular tudo
@@ -412,6 +432,108 @@ GROUP BY exchange, ativo, timeframe, DATE_TRUNC('hour', open_time);
 ```sql
 REFRESH MATERIALIZED VIEW CONCURRENTLY mv_velas_agregadas;
 ```
+
+---
+
+## Tabelas de Padrões de Trading (v1.3.0)
+
+### Tabela: `padroes_detectados`
+
+Armazena padrões técnicos detectados com telemetria completa.
+
+```sql
+CREATE TABLE padroes_detectados (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    timeframe VARCHAR(5) NOT NULL,
+    open_time TIMESTAMP NOT NULL,
+    tipo_padrao VARCHAR(50) NOT NULL,
+    direcao VARCHAR(10) NOT NULL,  -- LONG, SHORT
+    score NUMERIC(5,4) NOT NULL,  -- 0.0 a 1.0
+    confidence NUMERIC(5,4) NOT NULL,  -- 0.0 a 1.0
+    regime VARCHAR(20) NOT NULL,  -- trending, range, indefinido
+    suggested_sl NUMERIC(20,8),
+    suggested_tp NUMERIC(20,8),
+    final_score NUMERIC(5,4) NOT NULL,  -- technical_score * 0.6 + confidence * 0.4
+    meta JSONB,  -- Metadados adicionais
+    criado_em TIMESTAMP DEFAULT NOW()
+);
+```
+
+**Índices:**
+- `idx_padroes_symbol_timeframe`: (symbol, timeframe, open_time) - Consultas rápidas por par
+- `idx_padroes_tipo`: (tipo_padrao) - Consultas por tipo de padrão
+- `idx_padroes_final_score`: (final_score) - Filtros por score
+
+**Uso:**
+- Armazena todos os padrões detectados pelo PluginPadroes
+- Campo `meta` (JSONB) contém informações específicas de cada padrão
+- Campo `regime` obrigatório conforme proxima_atualizacao.md
+
+### Tabela: `padroes_metricas`
+
+Armazena métricas de performance por padrão para validação temporal.
+
+```sql
+CREATE TABLE padroes_metricas (
+    id SERIAL PRIMARY KEY,
+    tipo_padrao VARCHAR(50) NOT NULL,
+    symbol VARCHAR(20),
+    timeframe VARCHAR(5),
+    periodo_inicio TIMESTAMP NOT NULL,
+    periodo_fim TIMESTAMP NOT NULL,
+    frequency NUMERIC(10,4) NOT NULL,  -- Ocorrências por 1000 velas
+    precision NUMERIC(5,4),  -- % de setups que atingiram target
+    recall NUMERIC(5,4),
+    expectancy NUMERIC(10,4),  -- EV por trade
+    sharpe_condicional NUMERIC(10,4),  -- Retorno médio / desvio por padrão
+    drawdown_condicional NUMERIC(10,4),  -- Max perda por padrão
+    winrate NUMERIC(5,4),
+    avg_rr NUMERIC(5,4),  -- Risk:Reward médio
+    total_trades INTEGER DEFAULT 0,
+    trades_win INTEGER DEFAULT 0,
+    trades_loss INTEGER DEFAULT 0,
+    tipo_validacao VARCHAR(20),  -- in_sample, out_of_sample, walk_forward, rolling
+    criado_em TIMESTAMP DEFAULT NOW()
+);
+```
+
+**Índices:**
+- `idx_padroes_metricas_tipo`: (tipo_padrao, periodo_inicio, periodo_fim) - Consultas por padrão e período
+- `idx_padroes_metricas_validacao`: (tipo_validacao) - Filtros por tipo de validação
+
+**Uso:**
+- Métricas calculadas durante validação temporal (Walk-Forward, Rolling Window, OOS)
+- Permite rankear padrões por performance real
+- Conforme proxima_atualizacao.md: OOS ≥ 30% e Expectancy OOS > 70% in-sample
+
+### Tabela: `padroes_confidence`
+
+Armazena histórico de confidence decay por padrão.
+
+```sql
+CREATE TABLE padroes_confidence (
+    id SERIAL PRIMARY KEY,
+    tipo_padrao VARCHAR(50) NOT NULL,
+    symbol VARCHAR(20),
+    timeframe VARCHAR(5),
+    data_ultimo_win TIMESTAMP,
+    days_since_last_win INTEGER,
+    base_score NUMERIC(5,4) NOT NULL,
+    confidence_score NUMERIC(5,4) NOT NULL,
+    em_quarentena BOOLEAN DEFAULT FALSE,  -- confidence < 0.5
+    criado_em TIMESTAMP DEFAULT NOW()
+);
+```
+
+**Índices:**
+- `idx_padroes_confidence_tipo`: (tipo_padrao, symbol, timeframe) - Consultas por padrão
+- `idx_padroes_confidence_quarentena`: (em_quarentena) - Filtros de padrões em quarentena
+
+**Uso:**
+- Rastreia confidence decay: `confidence_score = base_score * exp(-0.01 * days_since_last_win)`
+- Quarentena automática se `confidence_score < 0.5`
+- Peso maior no ensemble se `confidence_score > 0.8`
 
 ---
 
@@ -429,9 +551,11 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY mv_velas_agregadas;
 
 ### Padrões e Análises
 
-- `padroes_velas`: Padrões de velas detectados
-- `confluencias`: Confluências detectadas
-- `sinais`: Sinais de trading gerados
+- ✅ `padroes_detectados`: Padrões técnicos detectados com telemetria completa (v1.3.0)
+- ✅ `padroes_metricas`: Métricas de performance por padrão (v1.3.0)
+- ✅ `padroes_confidence`: Histórico de confidence decay por padrão (v1.3.0)
+- ⏳ `confluencias`: Confluências detectadas
+- ⏳ `sinais`: Sinais de trading gerados
 
 ---
 
@@ -536,8 +660,21 @@ psycopg2.errors.UniqueViolation: duplicate key value violates unique constraint
 
 ---
 
-**Última Atualização**: 05/11/2025  
-**Versão**: v1.2.0
+**Última Atualização**: 08/11/2025  
+**Versão**: v1.3.0
+
+### Changelog v1.3.0 (08/11/2025)
+
+#### Sistema de Padrões de Trading
+- ✅ Tabela `padroes_detectados` criada - Padrões técnicos detectados com telemetria completa
+- ✅ Tabela `padroes_metricas` criada - Métricas de performance por padrão
+- ✅ Tabela `padroes_confidence` criada - Histórico de confidence decay
+- ✅ Campo `testnet` adicionado na tabela `velas` - Distingue dados de testnet/mainnet
+- ✅ Constraint `unique_vela` atualizada para incluir `testnet`
+- ✅ View materializada `mv_velas_agregadas` atualizada para incluir `testnet`
+- ✅ Índice `idx_vela_testnet` criado para consultas por ambiente
+- ✅ Validação Temporal implementada (Walk-Forward, Rolling Window, OOS)
+- ✅ Métricas básicas calculadas e persistidas automaticamente
 
 ### Changelog v1.2.0 (05/11/2025)
 

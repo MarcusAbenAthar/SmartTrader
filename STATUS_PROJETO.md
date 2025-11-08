@@ -1,7 +1,7 @@
 # 📊 Status Geral do Projeto Smart Trader
 
-**Data:** 04/11/2025  
-**Versão Atual:** v1.0.3  
+**Data:** 08/11/2025  
+**Versão Atual:** v1.3.0  
 **Ambiente:** Testnet Bybit (configurável via .env)
 
 ---
@@ -95,7 +95,28 @@ Sistema completamente reescrito conforme especificação detalhada:
   - Buffer para análise em lote
   - Schema atualizado para PostgreSQL (JSONB, TIMESTAMP, etc.)
 
-### 6. Configuração
+### 6. Sistema de Padrões de Trading (08/11/2025)
+- ✅ **PluginPadroes** implementado
+  - Localização: `plugins/padroes/plugin_padroes.py`
+  - Top 10 padrões de trading implementados
+  - Filtro de regime de mercado (Trending vs Range)
+  - Confidence Decay (decaimento de confiança)
+  - Cálculo de score final
+  - Persistência automática no banco
+- ✅ **Tabelas no Banco de Dados**
+  - `padroes_detectados`: Padrões detectados com telemetria completa
+  - `padroes_metricas`: Métricas de performance por padrão
+  - `padroes_confidence`: Histórico de confidence decay
+- ✅ **Sistema de Validação Temporal** implementado (08/11/2025)
+  - Walk-Forward: 60% treino → 40% teste ✅ Completo
+  - Rolling Window: 180 dias → recalcula a cada 30 dias ⚠️ Básico (ver pendências abaixo)
+  - Out-of-Sample (OOS): ≥ 30% dos dados nunca vistos ✅ Completo
+  - Métricas básicas calculadas e persistidas ✅ Completo
+- ⏳ **Sistema de Backtest completo** (simulação de trades) - **PENDENTE** (ver justificativa abaixo)
+- ⏳ **Ensemble de Padrões** (combinação de múltiplos padrões) - **PENDENTE** (ver justificativa abaixo)
+- ⏳ **Rankeamento por Performance Real** - **PENDENTE** (depende de backtest)
+
+### 7. Configuração
 - ✅ `utils/main_config.py` - ConfigManager centralizado
   - Suporte a testnet/mainnet
   - Configurações dos 8 indicadores
@@ -106,6 +127,145 @@ Sistema completamente reescrito conforme especificação detalhada:
 ---
 
 ## 🚧 Em Desenvolvimento / Pendente
+
+### 0. Sistema de Padrões de Trading - Pendências (08/11/2025)
+
+**Status:** Top 30 padrões implementados, mas algumas funcionalidades avançadas pendentes conforme `proxima_atualizacao.md`.
+
+#### ⏳ Sistema de Backtest Completo (Simulação de Trades)
+**Status:** Pendente  
+**Prioridade:** Alta  
+**Justificativa:** O backtest completo requer:
+- Simulação realista de execução de trades (slippage, fees, latência)
+- Tracking de posições abertas/fechadas por padrão
+- Cálculo de métricas reais: `precision`, `recall`, `expectancy`, `winrate`, `avg R:R`, `sharpe_condicional`, `drawdown_condicional`
+- Integração com histórico de velas para validar se padrões detectados realmente atingiram target/stop
+- Sistema de gerenciamento de capital (position sizing, risk management)
+
+**Por que não foi implementado:**
+- Requer estrutura complexa de simulação de mercado (ordens, execuções, fees)
+- Necessita histórico completo de velas para validar padrões retroativamente
+- Métricas atuais são apenas `frequency` (ocorrências por 1000 velas)
+- Depende de dados históricos suficientes para validação estatística robusta
+- Implementação completa seria um módulo separado (PluginBacktest ou similar)
+
+**Próximos Passos:**
+1. Criar módulo de simulação de trades
+2. Implementar tracking de posições por padrão
+3. Calcular métricas reais baseadas em execuções simuladas
+4. Validar padrões retroativamente com dados históricos
+
+#### ⏳ Ensemble de Padrões (Combinação de Múltiplos Padrões)
+**Status:** Pendente  
+**Prioridade:** Média  
+**Justificativa:** O ensemble requer:
+- Detecção de convergência de padrões (2-3 padrões apontando mesma direção)
+- Sistema de pesos dinâmicos baseado em confidence de cada padrão
+- Score combinado quando múltiplos padrões convergem
+- Lógica de priorização (padrões com confidence > 0.8 têm peso maior)
+
+**Por que não foi implementado:**
+- Score final individual já está implementado (`final_score = technical_score * 0.6 + confidence * 0.4`)
+- Ensemble requer lógica adicional de detecção de convergência temporal
+- Necessita validação de quais combinações de padrões são mais eficazes
+- Depende de dados históricos para calibrar pesos do ensemble
+- Pode ser implementado como camada adicional após validação dos padrões individuais
+
+**Próximos Passos:**
+1. Implementar detecção de convergência de padrões (mesmo símbolo/timeframe/direção)
+2. Criar sistema de pesos dinâmicos baseado em confidence
+3. Validar combinações mais eficazes via backtest
+4. Integrar ensemble no fluxo de detecção
+
+#### ⏳ Rolling Window Completo (Validação Temporal)
+**Status:** Implementação básica  
+**Prioridade:** Média  
+**Justificativa:** Rolling Window completo requer:
+- Janela deslizante de 180 dias que recalcula métricas a cada 30 dias
+- Tracking de performance ao longo do tempo
+- Detecção de degradação de performance de padrões
+- Ajuste automático de confidence baseado em performance recente
+
+**Por que não foi implementado completamente:**
+- Implementação básica existe (estrutura do método)
+- Rolling Window completo requer histórico extenso de dados
+- Necessita sistema de cache para evitar recálculos desnecessários
+- Depende de métricas reais do backtest para ser efetivo
+- Pode ser expandido após backtest estar funcional
+
+**Próximos Passos:**
+1. Implementar janela deslizante completa (180 dias → recalcula a cada 30 dias)
+2. Adicionar tracking de performance ao longo do tempo
+3. Integrar com sistema de confidence decay baseado em performance real
+4. Otimizar com cache para performance
+
+#### ⏳ Rankeamento por Performance Real
+**Status:** Pendente  
+**Prioridade:** Alta (mas depende de backtest)  
+**Justificativa:** Rankeamento requer:
+- Métricas reais calculadas via backtest (expectancy, sharpe, winrate)
+- Comparação de performance entre padrões
+- Regras de promoção: `Expectancy OOS > 70% in-sample`, `Sharpe > 0.8`, `OOS ≥ 30%`
+- Sistema de ranking dinâmico baseado em performance recente
+
+**Por que não foi implementado:**
+- **Depende completamente do sistema de backtest completo**
+- Requer métricas reais (não apenas frequency)
+- Necessita validação OOS com dados suficientes (≥ 30 ocorrências em OOS)
+- Regras de promoção requerem comparação estatística robusta
+- Só faz sentido após backtest estar funcional e coletar dados reais
+
+**Próximos Passos:**
+1. Aguardar implementação do backtest completo
+2. Coletar métricas reais de todos os 30 padrões
+3. Implementar sistema de ranking baseado em performance
+4. Aplicar regras de promoção automaticamente
+
+#### ⚠️ Harmonic Patterns (Padrão #27) - Refinamento Necessário
+**Status:** Estrutura básica implementada  
+**Prioridade:** Baixa  
+**Justificativa:** Harmonic patterns requerem:
+- Detecção precisa de pontos A, B, C, D com relações Fibonacci específicas
+- Validação de proporções (AB=CD, Gartley, Butterfly, etc.)
+- Análise geométrica complexa de padrões harmônicos
+- Confirmação de completion de padrões
+
+**Por que não foi implementado completamente:**
+- Padrões harmônicos são extremamente complexos e requerem análise geométrica avançada
+- Detecção precisa requer múltiplas validações de proporções Fibonacci
+- Implementação completa seria um módulo separado (PluginHarmonicPatterns)
+- Estrutura básica existe para expansão futura
+- Prioridade menor comparado a padrões mais simples e efetivos
+
+**Próximos Passos:**
+1. Implementar detecção precisa de pontos A, B, C, D
+2. Validar proporções Fibonacci (0.618, 0.786, 1.272, etc.)
+3. Implementar detecção de padrões específicos (Gartley, Butterfly, etc.)
+4. Adicionar confirmação de completion
+
+#### ⚠️ Multi-Timeframe Confirmation (Padrão #29) - Requer Dados Multi-TF
+**Status:** Estrutura básica implementada  
+**Prioridade:** Média  
+**Justificativa:** Multi-timeframe requer:
+- Acesso simultâneo a dados de múltiplos timeframes (ex: 15m + 1h)
+- Lógica de confirmação entre timeframes (ex: padrão em 15m confirmado por tendência em 1h)
+- Sistema de priorização de timeframes (timeframe maior tem mais peso)
+- Integração com PluginDadosVelas para buscar dados de múltiplos TFs
+
+**Por que não foi implementado completamente:**
+- Requer modificação na estrutura de dados de entrada (múltiplos timeframes simultâneos)
+- Necessita lógica de confirmação entre timeframes
+- Depende de dados históricos de múltiplos timeframes disponíveis
+- Estrutura básica existe, mas requer integração com sistema de dados
+- Pode ser implementado como extensão após validação dos padrões em timeframe único
+
+**Próximos Passos:**
+1. Modificar estrutura de dados para suportar múltiplos timeframes
+2. Implementar lógica de confirmação entre timeframes
+3. Integrar com PluginDadosVelas para buscar dados multi-TF
+4. Validar eficácia de confirmação multi-timeframe
+
+---
 
 ### 1. Plugins de Indicadores
 **Status:** Plugin de dados criado, indicadores técnicos pendentes
@@ -131,8 +291,17 @@ Sistema completamente reescrito conforme especificação detalhada:
 - ⏳ `plugin_rsi.py` - RSI (14)
 - ⏳ `plugin_vwap.py` - VWAP (intraday)
 
-**Plugins de Padrões (conforme instrucao-velas.md):**
-- ⏳ `plugin_padroes_velas.py` - Detecção de 8 padrões de velas
+**Plugins de Padrões (conforme proxima_atualizacao.md):**
+- ✅ `PluginPadroes` - Sistema de detecção de padrões técnicos (v1.3.0)
+  - ✅ Top 30 padrões implementados (Top 10 + Próximos 20)
+  - ✅ Filtro de regime de mercado (Trending vs Range)
+  - ✅ Confidence Decay
+  - ✅ Persistência automática no banco
+  - ✅ Validação Temporal implementada (Walk-Forward, OOS completo, Rolling Window básico)
+  - ⚠️ Harmonic patterns (#27) - Estrutura básica (requer refinamento avançado)
+  - ⚠️ Multi-timeframe confirmation (#29) - Estrutura básica (requer dados multi-TF)
+- ⏳ Sistema de Backtest completo (simulação de trades) - **PENDENTE** (ver seção de pendências)
+- ⏳ Ensemble de Padrões (combinação de múltiplos padrões) - **PENDENTE** (ver seção de pendências)
 - ⏳ `plugin_confluencia.py` - 4 camadas de confluência
 
 ### 2. Lógica de Trading (GerenciadorBot)
@@ -173,6 +342,12 @@ Sistema completamente reescrito conforme especificação detalhada:
   - Uso de sql.Identifier para prevenir SQL injection
   - Validação de filtros obrigatórios em UPDATE e DELETE
   - Documentação completa com exemplos de uso
+- ✅ **Tabelas de Padrões** criadas (08/11/2025)
+  - `padroes_detectados`: Padrões detectados com telemetria completa
+  - `padroes_metricas`: Métricas de performance por padrão
+  - `padroes_confidence`: Histórico de confidence decay
+  - Campo `testnet` adicionado na tabela `velas`
+  - Constraint `unique_vela` atualizada para incluir `testnet`
 - ⏳ Schema generator automático (futuro)
 - ⏳ Tabelas para cada plugin de indicador (futuro)
 
@@ -373,8 +548,8 @@ LLAMA_API_KEY=...
 
 ---
 
-**Última Atualização:** 05/11/2025  
-**Status Geral:** 🟢 PluginBancoDados refatorado - CRUD completo com retorno padronizado e logs estruturados
+**Última Atualização:** 08/11/2025  
+**Status Geral:** 🟢 Sistema de Padrões de Trading implementado (Top 30 completo) - Validação Temporal implementada (Walk-Forward e OOS completos) - Backtest completo e Ensemble pendentes (ver seção de pendências)
 
 ## 📝 Changelog Resumo (05/11/2025 - PluginBancoDados Refatorado)
 

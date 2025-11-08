@@ -41,6 +41,10 @@ Smart_Trader/
 │   │   ├── plugin_rsi.py
 │   │   └── plugin_vwap.py
 │   │
+│   ├── padroes/            # Plugins de padrões de trading
+│   │   ├── __init__.py
+│   │   └── plugin_padroes.py  # Sistema de detecção de padrões (Top 10)
+│   │
 │   └── gerenciadores/      # Gerenciadores principais
 │       ├── __init__.py
 │       ├── gerenciador.py           # Classe base
@@ -154,9 +158,12 @@ Configurações padrão por par (em `utils/config.py`):
 
 ## 📝 Documentação
 
-- **Regras de Ouro**: `docs/regras_de_ouro.txt`
-- **Definição da Estratégia**: `docs/definicao_estrategia.txt`
+- **Regras de Ouro**: `docs/regras_de_ouro.md`
+- **Definição da Estratégia**: `docs/definicao_estrategia.md`
+- **Definição do Banco**: `docs/definicao_banco.md`
+- **Próxima Atualização**: `docs/proxima_atualizacao.md`
 - **Changelog**: `CHANGELOG.md`
+- **Status do Projeto**: `STATUS_PROJETO.md`
 
 ## 🧩 Arquitetura
 
@@ -167,6 +174,29 @@ Todos os plugins seguem o padrão:
 - Ciclo de vida: `inicializar()` → `executar()` → `finalizar()`
 - Armazenam dados em `self.dados_completos` (crus e analisados)
 - Persistem dados via `GerenciadorBanco`
+
+### Sistema de Padrões de Trading (v1.3.0)
+
+O sistema implementa detecção de padrões técnicos conforme `proxima_atualizacao.md`:
+
+**Top 10 Padrões Implementados:**
+1. Breakout de suporte/resistência com volume confirmado
+2. Pullback válido após breakout
+3. EMA crossover (9/21) com confirmação de volume
+4. RSI divergence (price × RSI)
+5. Bollinger Squeeze + rompimento
+6. VWAP rejection / acceptance
+7. Candlestick Engulfing
+8. Hammer / Hanging Man
+9. Volume spike anomaly
+10. False breakout
+
+**Características:**
+- Filtro de Regime de Mercado (Trending vs Range)
+- Confidence Decay (decaimento de confiança)
+- Score final: `(technical_score * 0.6) + (confidence * 0.4)`
+- Persistência automática no banco de dados
+- Pronto para validação temporal e backtest
 
 ### Gerenciadores
 

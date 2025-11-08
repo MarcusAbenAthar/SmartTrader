@@ -62,8 +62,8 @@ class PluginBancoDados(Plugin):
     __institucional__ = "Smart_Trader Plugin Banco Dados - Sistema 6/8 Unificado"
     
     PLUGIN_NAME = "PluginBancoDados"
-    plugin_versao = "v1.2.0"
-    plugin_schema_versao = "v1.2.0"
+    plugin_versao = "v1.3.0"
+    plugin_schema_versao = "v1.3.0"
     plugin_tipo = TipoPlugin.GERENCIADOR
     
     def __init__(
@@ -147,37 +147,117 @@ class PluginBancoDados(Plugin):
             # Cria pool de conexões
             # Garante que todos os parâmetros sejam strings válidas antes de passar para psycopg2
             try:
-                # Converte explicitamente para string e garante UTF-8 válido
-                host = str(self.db_host) if self.db_host else "localhost"
-                database = str(self.db_name) if self.db_name else "smarttrader"
-                user = str(self.db_user) if self.db_user else None
-                password = str(self.db_password) if self.db_password else None
+                # Função robusta para garantir UTF-8 válido
+                def _garantir_utf8_seguro(valor):
+                    """Converte valor para string UTF-8 válida de forma segura."""
+                    if valor is None:
+                        return None
+                    
+                    # Converte para string se necessário
+                    if not isinstance(valor, (str, bytes)):
+                        valor = str(valor)
+                    
+                    # Se for bytes, primeiro decodifica
+                    if isinstance(valor, bytes):
+                        try:
+                            valor = valor.decode('utf-8')
+                        except UnicodeDecodeError:
+                            try:
+                                valor = valor.decode('latin-1')
+                            except UnicodeDecodeError:
+                                valor = valor.decode('utf-8', errors='replace')
+                    
+                    # Agora valor é string - limpa completamente
+                    if isinstance(valor, str):
+                        # Remove caracteres de controle e normaliza
+                        # Primeiro, tenta garantir que é UTF-8 válido
+                        try:
+                            # Força codificação/decodificação para limpar bytes inválidos
+                            valor_bytes = valor.encode('utf-8', errors='replace')
+                            valor_limpo = valor_bytes.decode('utf-8', errors='replace')
+                            
+                            # Remove caracteres de controle não imprimíveis (exceto espaços, tabs, newlines)
+                            valor_limpo = ''.join(
+                                char for char in valor_limpo 
+                                if char.isprintable() or char in '\n\r\t'
+                            )
+                            
+                            # Remove espaços no início e fim
+                            valor_limpo = valor_limpo.strip()
+                            
+                            return valor_limpo
+                        except Exception:
+                            # Último recurso: remove tudo que não for ASCII imprimível
+                            return ''.join(
+                                char for char in str(valor) 
+                                if 32 <= ord(char) <= 126 or char in '\n\r\t'
+                            ).strip()
+                    
+                    return str(valor).strip()
+                
+                # Normaliza todos os parâmetros
+                host = _garantir_utf8_seguro(self.db_host) or "localhost"
+                database = _garantir_utf8_seguro(self.db_name) or "smarttrader"
+                user = _garantir_utf8_seguro(self.db_user)
+                password = _garantir_utf8_seguro(self.db_password)
                 port = int(self.db_port) if self.db_port else 5432
                 
-                # Garante que todas as strings estão em UTF-8 válido
-                def _garantir_utf8(s):
-                    if s is None:
-                        return None
-                    if isinstance(s, str):
-                        # Força codificação UTF-8 válida
-                        return s.encode("utf-8", errors="replace").decode("utf-8")
-                    return str(s)
+                # Valida que não há None em campos obrigatórios
+                if not all([host, database, user, password]):
+                    if self.logger:
+                        self.logger.error(
+                            f"[{self.PLUGIN_NAME}] Credenciais inválidas após normalização"
+                        )
+                    return False
                 
-                host = _garantir_utf8(host)
-                database = _garantir_utf8(database)
-                user = _garantir_utf8(user)
-                password = _garantir_utf8(password)
+                # Garante que todos os valores são strings válidas (não bytes)
+                # e que não contêm caracteres problemáticos
+                host = str(host) if host else "localhost"
+                database = str(database) if database else "smarttrader"
+                user = str(user) if user else None
+                password = str(password) if password else None
                 
-                self.connection_pool = pool.ThreadedConnectionPool(
-                    minconn=self.min_connections,
-                    maxconn=self.max_connections,
-                    host=host,
-                    database=database,
-                    user=user,
-                    password=password,
-                    port=port,
-                    connect_timeout=self.connection_timeout,
-                )
+                # Valida novamente após conversão
+                if not all([host, database, user, password]):
+                    if self.logger:
+                        self.logger.error(
+                            f"[{self.PLUGIN_NAME}] Credenciais inválidas após conversão para string"
+                        )
+                    return False
+                
+                # Cria o banco de dados se não existir
+                self._criar_banco_se_necessario(host, user, password, port, database)
+                
+                # Tenta criar o pool de conexões
+                # Usa parâmetros individuais (mais seguro para encoding)
+                # Garante que todos os valores são strings Python válidas
+                try:
+                    self.connection_pool = pool.ThreadedConnectionPool(
+                        minconn=self.min_connections,
+                        maxconn=self.max_connections,
+                        host=str(host),
+                        database=str(database),
+                        user=str(user),
+                        password=str(password),
+                        port=int(port),
+                        connect_timeout=self.connection_timeout,
+                    )
+                except (UnicodeDecodeError, UnicodeEncodeError) as e:
+                    # Se ainda houver erro de encoding, tenta usar DSN string
+                    if self.logger:
+                        self.logger.warning(
+                            f"[{self.PLUGIN_NAME}] Erro de encoding com parâmetros individuais, "
+                            f"tentando DSN string: {e}"
+                        )
+                    # Constrói DSN string manualmente (mais controle sobre encoding)
+                    dsn = f"host={host} dbname={database} user={user} password={password} port={port} connect_timeout={self.connection_timeout}"
+                    # Garante que DSN é UTF-8 válido
+                    dsn = dsn.encode('utf-8', errors='replace').decode('utf-8')
+                    self.connection_pool = pool.ThreadedConnectionPool(
+                        minconn=self.min_connections,
+                        maxconn=self.max_connections,
+                        dsn=dsn,
+                    )
                 
                 if self.logger:
                     self.logger.info(
@@ -206,6 +286,90 @@ class PluginBancoDados(Plugin):
                 )
             return False
     
+    def _criar_banco_se_necessario(self, host: str, user: str, password: str, port: int, database: str):
+        """
+        Cria o banco de dados se não existir.
+        
+        Conecta ao banco padrão 'postgres' para criar o banco 'smarttrader'.
+        
+        Args:
+            host: Host do PostgreSQL
+            user: Usuário do PostgreSQL
+            password: Senha do PostgreSQL
+            port: Porta do PostgreSQL
+            database: Nome do banco de dados a criar
+        """
+        try:
+            # Conecta ao banco padrão 'postgres' para criar o banco
+            if self.logger:
+                self.logger.info(
+                    f"[{self.PLUGIN_NAME}] Verificando se banco de dados '{database}' existe..."
+                )
+            
+            # Conecta ao banco padrão 'postgres'
+            conn_postgres = psycopg2.connect(
+                host=host,
+                database="postgres",  # Banco padrão do PostgreSQL
+                user=user,
+                password=password,
+                port=port,
+                connect_timeout=self.connection_timeout,
+            )
+            
+            # Desabilita autocommit para poder executar CREATE DATABASE
+            conn_postgres.autocommit = True
+            cursor = conn_postgres.cursor()
+            
+            # Verifica se o banco existe
+            cursor.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s",
+                (database,)
+            )
+            
+            existe = cursor.fetchone()
+            
+            if not existe:
+                # Cria o banco de dados
+                if self.logger:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] Banco de dados '{database}' não existe. Criando..."
+                    )
+                
+                # Usa sql.Identifier para segurança (evita SQL injection)
+                cursor.execute(
+                    sql.SQL("CREATE DATABASE {}").format(
+                        sql.Identifier(database)
+                    )
+                )
+                
+                if self.logger:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] Banco de dados '{database}' criado com sucesso"
+                    )
+            else:
+                if self.logger:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] Banco de dados '{database}' já existe"
+                    )
+            
+            cursor.close()
+            conn_postgres.close()
+            
+        except psycopg2.Error as e:
+            if self.logger:
+                self.logger.warning(
+                    f"[{self.PLUGIN_NAME}] Erro ao verificar/criar banco de dados '{database}': {e}. "
+                    f"Tentando conectar mesmo assim (banco pode já existir)..."
+                )
+            # Não falha completamente - pode ser que o banco já exista
+            # ou que não tenhamos permissão para criar
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(
+                    f"[{self.PLUGIN_NAME}] Erro inesperado ao verificar/criar banco de dados: {e}. "
+                    f"Tentando conectar mesmo assim..."
+                )
+    
     def _criar_tabelas_se_necessario(self):
         """
         Cria tabelas necessárias se não existirem.
@@ -221,6 +385,7 @@ class PluginBancoDados(Plugin):
             
             # Cria tabela velas conforme instrucao-velas.md
             # Adicionado campo exchange para suporte multi-exchange futuro
+            # Adicionado campo testnet para distinguir dados de testnet e mainnet
             create_velas_table = """
             CREATE TABLE IF NOT EXISTS velas (
                 id SERIAL PRIMARY KEY,
@@ -235,32 +400,52 @@ class PluginBancoDados(Plugin):
                 close NUMERIC(20,8) NOT NULL,
                 volume NUMERIC(20,8) NOT NULL,
                 fechada BOOLEAN DEFAULT TRUE,
+                testnet BOOLEAN DEFAULT FALSE,  -- Campo para distinguir testnet/mainnet
                 criado_em TIMESTAMP DEFAULT NOW(),
                 atualizado_em TIMESTAMP DEFAULT NOW(),
                 
-                -- Chave única para evitar duplicatas (inclui exchange)
-                CONSTRAINT unique_vela UNIQUE (exchange, ativo, timeframe, open_time)
+                -- Chave única para evitar duplicatas (inclui exchange e testnet)
+                CONSTRAINT unique_vela UNIQUE (exchange, ativo, timeframe, open_time, testnet)
             );
             
-            -- Índice composto para consultas rápidas
+            -- Adiciona coluna testnet se não existir (para migração de tabelas existentes)
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'velas' AND column_name = 'testnet'
+                ) THEN
+                    ALTER TABLE velas ADD COLUMN testnet BOOLEAN DEFAULT FALSE;
+                    -- Atualiza constraint única para incluir testnet
+                    ALTER TABLE velas DROP CONSTRAINT IF EXISTS unique_vela;
+                    ALTER TABLE velas ADD CONSTRAINT unique_vela 
+                        UNIQUE (exchange, ativo, timeframe, open_time, testnet);
+                END IF;
+            END $$;
+            
+            -- Ãndice composto para consultas rÃ¡pidas
             CREATE INDEX IF NOT EXISTS idx_vela_lookup 
             ON velas(ativo, timeframe, open_time);
             
-            -- Índice para consultas por ativo
+            -- Ãndice para consultas por ativo
             CREATE INDEX IF NOT EXISTS idx_vela_ativo 
             ON velas(ativo);
             
-            -- Índice para consultas por timeframe
+            -- Ãndice para consultas por timeframe
             CREATE INDEX IF NOT EXISTS idx_vela_timeframe 
             ON velas(timeframe);
             
-            -- Índice para consultas por data
+            -- Ãndice para consultas por data
             CREATE INDEX IF NOT EXISTS idx_vela_open_time 
             ON velas(open_time);
             
             -- Índice para consultas por exchange
             CREATE INDEX IF NOT EXISTS idx_vela_exchange 
             ON velas(exchange);
+            
+            -- Índice para consultas por testnet (filtrar testnet/mainnet)
+            CREATE INDEX IF NOT EXISTS idx_vela_testnet 
+            ON velas(testnet);
             
             -- Tabela de telemetria de plugins (para estatísticas de aprendizado para IA)
             CREATE TABLE IF NOT EXISTS telemetria_plugins (
@@ -281,7 +466,7 @@ class PluginBancoDados(Plugin):
                 criado_em TIMESTAMP DEFAULT NOW()
             );
             
-            -- Índice para consultas de telemetria por plugin
+            -- Ãndice para consultas de telemetria por plugin
             CREATE INDEX IF NOT EXISTS idx_telemetria_plugin 
             ON telemetria_plugins(plugin, timestamp);
             
@@ -297,17 +482,21 @@ class PluginBancoDados(Plugin):
                 CONSTRAINT unique_schema_versao UNIQUE (tabela, versao)
             );
             
-            -- Índice para consultas de histórico de schema
+            -- Ãndice para consultas de histÃ³rico de schema
             CREATE INDEX IF NOT EXISTS idx_schema_versoes_tabela 
             ON schema_versoes(tabela, versao);
             
             -- View materializada para médias e indicadores agregados
             -- Acelera análises da IA sem recalcular tudo
-            CREATE MATERIALIZED VIEW IF NOT EXISTS mv_velas_agregadas AS
+            -- Remove view antiga se existir (para atualizar estrutura)
+            DROP MATERIALIZED VIEW IF EXISTS mv_velas_agregadas;
+            
+            CREATE MATERIALIZED VIEW mv_velas_agregadas AS
             SELECT 
                 exchange,
                 ativo,
                 timeframe,
+                testnet,
                 DATE_TRUNC('hour', open_time) as hora,
                 COUNT(*) as total_velas,
                 AVG(close) as media_close,
@@ -321,11 +510,91 @@ class PluginBancoDados(Plugin):
                 AVG(high - low) as media_range
             FROM velas
             WHERE fechada = TRUE
-            GROUP BY exchange, ativo, timeframe, DATE_TRUNC('hour', open_time);
+            GROUP BY exchange, ativo, timeframe, testnet, DATE_TRUNC('hour', open_time);
             
             -- Índice para view materializada
             CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_velas_agregadas 
-            ON mv_velas_agregadas(exchange, ativo, timeframe, hora);
+            ON mv_velas_agregadas(exchange, ativo, timeframe, testnet, hora);
+            
+            -- Tabelas de Padrões de Trading (v1.3.0)
+            -- Tabela: padroes_detectados
+            CREATE TABLE IF NOT EXISTS padroes_detectados (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(20) NOT NULL,
+                timeframe VARCHAR(5) NOT NULL,
+                open_time TIMESTAMP NOT NULL,
+                tipo_padrao VARCHAR(50) NOT NULL,
+                direcao VARCHAR(10) NOT NULL,
+                score NUMERIC(5,4) NOT NULL,
+                confidence NUMERIC(5,4) NOT NULL,
+                regime VARCHAR(20) NOT NULL,
+                suggested_sl NUMERIC(20,8),
+                suggested_tp NUMERIC(20,8),
+                final_score NUMERIC(5,4) NOT NULL,
+                meta JSONB,
+                criado_em TIMESTAMP DEFAULT NOW()
+            );
+            
+            -- Índices para padroes_detectados
+            CREATE INDEX IF NOT EXISTS idx_padroes_symbol_timeframe 
+            ON padroes_detectados(symbol, timeframe, open_time);
+            
+            CREATE INDEX IF NOT EXISTS idx_padroes_tipo 
+            ON padroes_detectados(tipo_padrao);
+            
+            CREATE INDEX IF NOT EXISTS idx_padroes_final_score 
+            ON padroes_detectados(final_score);
+            
+            -- Tabela: padroes_metricas
+            CREATE TABLE IF NOT EXISTS padroes_metricas (
+                id SERIAL PRIMARY KEY,
+                tipo_padrao VARCHAR(50) NOT NULL,
+                symbol VARCHAR(20),
+                timeframe VARCHAR(5),
+                periodo_inicio TIMESTAMP NOT NULL,
+                periodo_fim TIMESTAMP NOT NULL,
+                frequency NUMERIC(10,4) NOT NULL,
+                precision NUMERIC(5,4),
+                recall NUMERIC(5,4),
+                expectancy NUMERIC(10,4),
+                sharpe_condicional NUMERIC(10,4),
+                drawdown_condicional NUMERIC(10,4),
+                winrate NUMERIC(5,4),
+                avg_rr NUMERIC(5,4),
+                total_trades INTEGER DEFAULT 0,
+                trades_win INTEGER DEFAULT 0,
+                trades_loss INTEGER DEFAULT 0,
+                tipo_validacao VARCHAR(20),
+                criado_em TIMESTAMP DEFAULT NOW()
+            );
+            
+            -- Índices para padroes_metricas
+            CREATE INDEX IF NOT EXISTS idx_padroes_metricas_tipo 
+            ON padroes_metricas(tipo_padrao, periodo_inicio, periodo_fim);
+            
+            CREATE INDEX IF NOT EXISTS idx_padroes_metricas_validacao 
+            ON padroes_metricas(tipo_validacao);
+            
+            -- Tabela: padroes_confidence
+            CREATE TABLE IF NOT EXISTS padroes_confidence (
+                id SERIAL PRIMARY KEY,
+                tipo_padrao VARCHAR(50) NOT NULL,
+                symbol VARCHAR(20),
+                timeframe VARCHAR(5),
+                data_ultimo_win TIMESTAMP,
+                days_since_last_win INTEGER,
+                base_score NUMERIC(5,4) NOT NULL,
+                confidence_score NUMERIC(5,4) NOT NULL,
+                em_quarentena BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP DEFAULT NOW()
+            );
+            
+            -- Índices para padroes_confidence
+            CREATE INDEX IF NOT EXISTS idx_padroes_confidence_tipo 
+            ON padroes_confidence(tipo_padrao, symbol, timeframe);
+            
+            CREATE INDEX IF NOT EXISTS idx_padroes_confidence_quarentena 
+            ON padroes_confidence(em_quarentena);
             """
             
             cursor.execute(create_velas_table)
@@ -334,6 +603,14 @@ class PluginBancoDados(Plugin):
             # Registra versão do schema no histórico
             self._registrar_versao_schema("velas", "v1.2.0", 
                 "PluginBancoDados refatorado com CRUD completo e retorno padronizado", conn)
+            
+            # Registra versão das tabelas de padrões (v1.3.0)
+            self._registrar_versao_schema("padroes_detectados", "v1.3.0", 
+                "Tabela de padrões detectados com telemetria completa", conn)
+            self._registrar_versao_schema("padroes_metricas", "v1.3.0", 
+                "Tabela de métricas de performance por padrão", conn)
+            self._registrar_versao_schema("padroes_confidence", "v1.3.0", 
+                "Tabela de histórico de confidence decay", conn)
             
             cursor.close()
             self._devolver_conexao(conn)
@@ -739,12 +1016,13 @@ class PluginBancoDados(Plugin):
             
             # Query de upsert conforme instrucao-velas.md
             # Inclui campo exchange para suporte multi-exchange
+            # Inclui campo testnet para distinguir testnet/mainnet
             upsert_query = """
             INSERT INTO velas (
                 exchange, ativo, timeframe, open_time, close_time,
-                open, high, low, close, volume, fechada
+                open, high, low, close, volume, fechada, testnet
             ) VALUES %s
-            ON CONFLICT (exchange, ativo, timeframe, open_time) 
+            ON CONFLICT (exchange, ativo, timeframe, open_time, testnet) 
             DO UPDATE SET
                 close_time = EXCLUDED.close_time,
                 open = EXCLUDED.open,
@@ -786,6 +1064,7 @@ class PluginBancoDados(Plugin):
                     vela["close"],
                     vela["volume"],
                     vela.get("fechada", True),
+                    vela.get("testnet", False),  # Campo testnet (padrão: False/mainnet)
                 ))
             
             # Executa upsert em lote
@@ -1592,6 +1871,7 @@ class PluginBancoDados(Plugin):
                     "close": "NUMERIC(20,8) NOT NULL",
                     "volume": "NUMERIC(20,8) NOT NULL",
                     "fechada": "BOOLEAN DEFAULT TRUE",
+                    "testnet": "BOOLEAN DEFAULT FALSE",
                     "criado_em": "TIMESTAMP DEFAULT NOW()",
                     "atualizado_em": "TIMESTAMP DEFAULT NOW()",
                 }
@@ -1630,6 +1910,70 @@ class PluginBancoDados(Plugin):
                     "migracao_sql": "TEXT",
                     "aplicado_em": "TIMESTAMP DEFAULT NOW()",
                     "aplicado_por": "VARCHAR(100)",
+                }
+            },
+            "padroes_detectados": {
+                "descricao": "Padrões de trading detectados com telemetria completa",
+                "modo_acesso": "shared",
+                "plugin": self.PLUGIN_NAME,
+                "schema": {
+                    "id": "SERIAL PRIMARY KEY",
+                    "symbol": "VARCHAR(20) NOT NULL",
+                    "timeframe": "VARCHAR(5) NOT NULL",
+                    "open_time": "TIMESTAMP NOT NULL",
+                    "tipo_padrao": "VARCHAR(50) NOT NULL",
+                    "direcao": "VARCHAR(10) NOT NULL",
+                    "score": "NUMERIC(5,4) NOT NULL",
+                    "confidence": "NUMERIC(5,4) NOT NULL",
+                    "regime": "VARCHAR(20) NOT NULL",
+                    "suggested_sl": "NUMERIC(20,8)",
+                    "suggested_tp": "NUMERIC(20,8)",
+                    "final_score": "NUMERIC(5,4) NOT NULL",
+                    "meta": "JSONB",
+                    "criado_em": "TIMESTAMP DEFAULT NOW()",
+                }
+            },
+            "padroes_metricas": {
+                "descricao": "Métricas de performance por padrão de trading",
+                "modo_acesso": "shared",
+                "plugin": self.PLUGIN_NAME,
+                "schema": {
+                    "id": "SERIAL PRIMARY KEY",
+                    "tipo_padrao": "VARCHAR(50) NOT NULL",
+                    "symbol": "VARCHAR(20)",
+                    "timeframe": "VARCHAR(5)",
+                    "periodo_inicio": "TIMESTAMP NOT NULL",
+                    "periodo_fim": "TIMESTAMP NOT NULL",
+                    "frequency": "NUMERIC(10,4) NOT NULL",
+                    "precision": "NUMERIC(5,4)",
+                    "recall": "NUMERIC(5,4)",
+                    "expectancy": "NUMERIC(10,4)",
+                    "sharpe_condicional": "NUMERIC(10,4)",
+                    "drawdown_condicional": "NUMERIC(10,4)",
+                    "winrate": "NUMERIC(5,4)",
+                    "avg_rr": "NUMERIC(5,4)",
+                    "total_trades": "INTEGER DEFAULT 0",
+                    "trades_win": "INTEGER DEFAULT 0",
+                    "trades_loss": "INTEGER DEFAULT 0",
+                    "tipo_validacao": "VARCHAR(20)",
+                    "criado_em": "TIMESTAMP DEFAULT NOW()",
+                }
+            },
+            "padroes_confidence": {
+                "descricao": "Histórico de confidence decay por padrão",
+                "modo_acesso": "shared",
+                "plugin": self.PLUGIN_NAME,
+                "schema": {
+                    "id": "SERIAL PRIMARY KEY",
+                    "tipo_padrao": "VARCHAR(50) NOT NULL",
+                    "symbol": "VARCHAR(20)",
+                    "timeframe": "VARCHAR(5)",
+                    "data_ultimo_win": "TIMESTAMP",
+                    "days_since_last_win": "INTEGER",
+                    "base_score": "NUMERIC(5,4) NOT NULL",
+                    "confidence_score": "NUMERIC(5,4) NOT NULL",
+                    "em_quarentena": "BOOLEAN DEFAULT FALSE",
+                    "criado_em": "TIMESTAMP DEFAULT NOW()",
                 }
             },
         }
