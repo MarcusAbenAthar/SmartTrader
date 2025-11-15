@@ -7,13 +7,37 @@ Conforme especificação: 60 velas 15m, 48 velas 1h, 60 velas 4h
 __institucional__ = "Smart_Trader Plugin Dados Velas - Sistema 6/8 Unificado"
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable
 from datetime import datetime
 import pytz
 import json
 from pathlib import Path
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from plugins.base_plugin import Plugin, execucao_segura
 from plugins.base_plugin import GerenciadorLogProtocol, GerenciadorBancoProtocol
+
+# Semáforo para limitar requisições simultâneas à API (CCXT não é thread-safe)
+# Valor padrão será ajustado dinamicamente baseado no número de workers
+_exchange_semaphore = None
+_exchange_semaphore_workers = None
+
+def _obter_semaphore(num_workers: int) -> threading.Semaphore:
+    """
+    Obtém ou cria o semáforo com base no número de workers.
+    Permite até num_workers requisições simultâneas.
+    
+    Se o número de workers mudar, recria o semáforo para refletir a mudança.
+    """
+    global _exchange_semaphore, _exchange_semaphore_workers
+    # Se o semáforo não existe ou o número de workers mudou, recria
+    if _exchange_semaphore is None or _exchange_semaphore_workers != num_workers:
+        # Semáforo permite o mesmo número de requisições que workers
+        # Isso evita que workers fiquem bloqueados esperando
+        _exchange_semaphore = threading.Semaphore(num_workers)
+        _exchange_semaphore_workers = num_workers
+    return _exchange_semaphore
 
 
 class PluginDadosVelas(Plugin):
@@ -80,6 +104,16 @@ class PluginDadosVelas(Plugin):
         # Caminho para salvar JSON com dados das moedas (sem velas)
         self.json_path = Path("data/moedas_dados.json")
         self.json_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Callbacks para processamento incremental
+        self.callback_par_processado: Optional[Callable[[str, Dict[str, Any]], None]] = None
+        # Número de workers é calculado dinamicamente baseado na quantidade de pares
+        # Fórmula: max(1, pares // 3) - sem limitação estática
+        self._cancelamento_logado: bool = False  # Flag para evitar logs repetitivos
+        
+        # Controle de intercalação de pares (para processar em lotes)
+        self._indice_lote = 0  # Índice do lote atual para intercalação
+        self._pares_por_lote = 6  # Processa 6 pares por ciclo para evitar sobrecarga da API
         
     def _inicializar_interno(self) -> bool:
         """
@@ -205,6 +239,344 @@ class PluginDadosVelas(Plugin):
                 )
             return False
     
+    def definir_callback_par_processado(self, callback: Callable[[str, Dict[str, Any]], None]):
+        """
+        Define callback que será chamado quando um par for completamente processado.
+        
+        Args:
+            callback: Função que recebe (par: str, dados_par: Dict[str, Any])
+        """
+        self.callback_par_processado = callback
+    
+    def _buscar_timeframe_com_retry(
+        self,
+        par_atual: str,
+        tf: str,
+        exchange,
+        quantidade: int,
+        max_retries: int = 2
+    ) -> Optional[List]:
+        """
+        Busca um timeframe específico com retry automático.
+        
+        Args:
+            par_atual: Par a processar
+            tf: Timeframe a buscar
+            exchange: Instância da exchange
+            quantidade: Quantidade de velas
+            max_retries: Número máximo de tentativas
+            
+        Returns:
+            Lista de velas ou None se falhar após retries
+        """
+        if self.logger:
+            self.logger.info(
+                f"[{self.PLUGIN_NAME}] [THREAD] Iniciando busca de {par_atual} {tf} "
+                f"(quantidade: {quantidade}, max_retries: {max_retries})"
+            )
+        
+        num_workers = getattr(self, '_num_workers_efetivo', 3)
+        semaphore = _obter_semaphore(num_workers)
+        
+        for tentativa in range(max_retries):
+            try:
+                if self.logger:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] [THREAD] Tentativa {tentativa + 1}/{max_retries} "
+                        f"para {par_atual} {tf} - Aguardando semáforo..."
+                    )
+                
+                with semaphore:
+                    if self.logger:
+                        self.logger.debug(
+                            f"[{self.PLUGIN_NAME}] [THREAD] Semáforo adquirido para {par_atual} {tf}. "
+                            f"Fazendo requisição à API..."
+                        )
+                    
+                    inicio_requisicao = time.time()
+                    velas = exchange.fetch_ohlcv(
+                        par_atual,
+                        timeframe=tf,
+                        limit=quantidade
+                    )
+                    tempo_requisicao = time.time() - inicio_requisicao
+                    
+                    if self.logger:
+                        self.logger.debug(
+                            f"[{self.PLUGIN_NAME}] [THREAD] Requisição {par_atual} {tf} completada em {tempo_requisicao:.2f}s. "
+                            f"Velas retornadas: {len(velas) if velas else 0}"
+                        )
+                
+                if velas:
+                    return velas
+                else:
+                    # Resposta vazia - tenta novamente se não for última tentativa
+                    if tentativa < max_retries - 1:
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] Resposta vazia para {par_atual} {tf}, "
+                                f"tentativa {tentativa + 1}/{max_retries}. Aguardando 1s..."
+                            )
+                        time.sleep(1)
+                        continue
+                    else:
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] Resposta vazia para {par_atual} {tf} após {max_retries} tentativas. "
+                                f"Ignorando este timeframe."
+                            )
+                        return None
+                        
+            except Exception as e:
+                tipo_erro = type(e).__name__
+                msg_erro = str(e)
+                
+                # Erro de símbolo inválido - não retry
+                if "BadSymbol" in tipo_erro or "does not have market symbol" in msg_erro:
+                    if self.logger:
+                        self.logger.debug(
+                            f"[{self.PLUGIN_NAME}] Símbolo {par_atual} não disponível para {tf}. "
+                            f"Ignorando este timeframe."
+                        )
+                    return None
+                
+                # Rate limit - retry com delay
+                elif ("RateLimitExceeded" in tipo_erro or 
+                      "Too many visits" in msg_erro or 
+                      ("retCode" in msg_erro and "10006" in msg_erro)):
+                    if tentativa < max_retries - 1:
+                        delay = 2 * (tentativa + 1)  # Backoff exponencial: 2s, 4s
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] Rate limit para {par_atual} {tf}. "
+                                f"Aguardando {delay}s antes de retry {tentativa + 2}/{max_retries}..."
+                            )
+                        time.sleep(delay)
+                        continue
+                    else:
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] Rate limit para {par_atual} {tf} após {max_retries} tentativas. "
+                                f"Ignorando este timeframe."
+                            )
+                        return None
+                else:
+                    # Outros erros - retry uma vez
+                    if tentativa < max_retries - 1:
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] Erro ao buscar {par_atual} {tf}: {msg_erro}. "
+                                f"Tentativa {tentativa + 2}/{max_retries}..."
+                            )
+                        time.sleep(1)
+                        continue
+                    else:
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] Erro ao buscar {par_atual} {tf} após {max_retries} tentativas: {msg_erro}. "
+                                f"Ignorando este timeframe."
+                            )
+                        return None
+        
+        return None
+    
+    def _processar_par_incremental(
+        self, 
+        par_atual: str, 
+        exchange, 
+        timeframes_para_buscar: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Processa um par incrementalmente: coleta timeframes sequencialmente → armazena → retorna dados.
+        
+        Timeframes são processados um por vez para evitar sobrecarga da API.
+        Falhas em um timeframe não impedem o processamento dos outros.
+        
+        Args:
+            par_atual: Par a processar
+            exchange: Instância da exchange
+            timeframes_para_buscar: Lista de timeframes
+            
+        Returns:
+            dict: Dados do par processado (pode ter apenas alguns timeframes se outros falharem)
+        """
+        dados_par = {}
+        
+        if self.logger:
+            self.logger.info(
+                f"[{self.PLUGIN_NAME}] [THREAD] Iniciando processamento incremental para {par_atual}, "
+                f"timeframes: {timeframes_para_buscar}, total: {len(timeframes_para_buscar) if timeframes_para_buscar else 0}"
+            )
+        
+        # Verifica se há timeframes para processar
+        if not timeframes_para_buscar:
+            if self.logger:
+                self.logger.warning(
+                    f"[{self.PLUGIN_NAME}] [THREAD] Nenhum timeframe para processar para {par_atual}!"
+                )
+            return {}
+        
+        # Processa timeframes sequencialmente (não em paralelo)
+        try:
+            if self.logger:
+                self.logger.info(
+                    f"[{self.PLUGIN_NAME}] [THREAD] Iniciando loop de timeframes para {par_atual}. "
+                    f"Total de timeframes: {len(timeframes_para_buscar)}"
+                )
+            
+            for idx, tf in enumerate(timeframes_para_buscar):
+                if self.logger:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] [THREAD] Loop iter {idx+1}/{len(timeframes_para_buscar)}: "
+                        f"processando timeframe {tf} para {par_atual}"
+                    )
+                
+                # Verifica cancelamento (sem logar repetidamente)
+                # NOTA: Não verificamos cancelamento aqui porque o plugin é reinicializado a cada ciclo
+                # e isso pode causar falsos positivos. O cancelamento só deve ser verificado no nível superior.
+                # if self.cancelamento_solicitado():
+                #     if not self._cancelamento_logado:
+                #         if self.logger:
+                #             self.logger.info(
+                #                 f"[{self.PLUGIN_NAME}] [THREAD] Cancelamento solicitado durante processamento de {par_atual}"
+                #             )
+                #         self._cancelamento_logado = True
+                #     break
+                
+                # Pequeno delay entre timeframes para evitar rate limit (exceto o primeiro)
+                if idx > 0:
+                    time.sleep(0.3)  # 300ms entre requisições
+                
+                try:
+                    quantidade = self.CONFIG_VELAS[tf]["quantidade"]
+                    
+                    if self.logger:
+                        self.logger.info(
+                            f"[{self.PLUGIN_NAME}] [THREAD] Processando timeframe {tf} para {par_atual} "
+                            f"(quantidade: {quantidade})"
+                        )
+                    
+                    # Busca velas com retry automático (tratamento de erros dentro da função)
+                    velas = self._buscar_timeframe_com_retry(par_atual, tf, exchange, quantidade)
+                    
+                    # Se não conseguiu buscar (após retries), ignora este timeframe e continua
+                    if not velas:
+                        if self.logger:
+                            self.logger.warning(
+                                f"[{self.PLUGIN_NAME}] [THREAD] Nenhuma vela retornada para {par_atual} {tf} "
+                                f"após todas as tentativas. Continuando com próximo timeframe."
+                            )
+                        # Não adiciona nada ao dados_par - simplesmente ignora este timeframe
+                        continue
+                    
+                    if self.logger:
+                        self.logger.debug(
+                            f"[{self.PLUGIN_NAME}] [THREAD] {len(velas)} velas obtidas para {par_atual} {tf}. "
+                            f"Processando..."
+                        )
+                    
+                    # Processa velas
+                    velas_processadas = []
+                    ultima_vela = None
+                    
+                    for i, vela in enumerate(velas):
+                        timestamp, open_price, high, low, close, volume = vela
+                        
+                        vela_processada = {
+                            "timestamp": timestamp,
+                            "datetime": datetime.fromtimestamp(timestamp / 1000, tz=pytz.UTC).astimezone(self.timezone_sp),
+                            "open": float(open_price),
+                            "high": float(high),
+                            "low": float(low),
+                            "close": float(close),
+                            "volume": float(volume),
+                            "index": i,
+                            "fechada": self._vela_fechou(timestamp, tf),
+                        }
+                        
+                        velas_processadas.append(vela_processada)
+                        
+                        if i == len(velas) - 1:
+                            ultima_vela = vela_processada
+                    
+                    # Armazena última vela fechada
+                    cache_key = f"{par_atual}_{tf}"
+                    if ultima_vela and ultima_vela["fechada"]:
+                        self._ultima_vela_fechada[cache_key] = ultima_vela
+                    
+                    dados_par[tf] = {
+                        "velas": velas_processadas,
+                        "quantidade": len(velas_processadas),
+                        "ultima_vela": ultima_vela,
+                        "ultima_vela_fechada": ultima_vela["fechada"] if ultima_vela else False,
+                    }
+                    
+                except Exception as e:
+                    # Erro inesperado - loga mas não impede processamento dos outros timeframes
+                    if self.logger:
+                        import traceback
+                        self.logger.warning(
+                            f"[{self.PLUGIN_NAME}] [THREAD] Erro inesperado ao processar {par_atual} {tf}: "
+                            f"{type(e).__name__}: {str(e)}. Ignorando este timeframe. "
+                            f"Traceback: {traceback.format_exc()}"
+                        )
+                    # Não adiciona ao dados_par - continua com próximo timeframe
+                    continue
+        except Exception as e:
+            # Erro crítico no loop - loga e retorna vazio
+            if self.logger:
+                import traceback
+                self.logger.error(
+                    f"[{self.PLUGIN_NAME}] [THREAD] Erro crítico no loop de processamento para {par_atual}: "
+                    f"{type(e).__name__}: {str(e)}. Traceback: {traceback.format_exc()}"
+                )
+            return {}
+        
+        # Processa par mesmo que tenha apenas 1 timeframe válido
+        # Filtra apenas timeframes com velas válidas
+        timeframes_validos = {
+            tf: dados_tf for tf, dados_tf in dados_par.items()
+            if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+        }
+        
+        # Se pelo menos 1 timeframe foi coletado, processa o par
+        if timeframes_validos:
+            dados_par_filtrado = timeframes_validos
+            
+            # Armazena no banco imediatamente para este par
+            if self.plugin_banco_dados:
+                resultados_par = {par_atual: dados_par_filtrado}
+                self._salvar_velas_no_banco(resultados_par)
+            
+            # Atualiza dados completos
+            if "crus" not in self.dados_completos:
+                self.dados_completos["crus"] = {}
+            self.dados_completos["crus"][par_atual] = dados_par_filtrado
+            
+            if self.logger:
+                timeframes_coletados = list(timeframes_validos.keys())
+                total_velas = sum(
+                    len(dados_tf.get("velas", []))
+                    for dados_tf in timeframes_validos.values()
+                )
+                self.logger.debug(
+                    f"[{self.PLUGIN_NAME}] Processamento incremental de {par_atual} concluído: "
+                    f"{len(timeframes_coletados)}/{len(timeframes_para_buscar)} timeframes válidos, "
+                    f"{total_velas} velas coletadas"
+                )
+            
+            return dados_par_filtrado
+        else:
+            # Nenhum timeframe válido - retorna vazio mas não é erro crítico
+            if self.logger:
+                self.logger.warning(
+                    f"[{self.PLUGIN_NAME}] [THREAD] Nenhum timeframe válido coletado para {par_atual} neste ciclo. "
+                    f"Timeframes tentados: {timeframes_para_buscar}, "
+                    f"Timeframes coletados: {list(dados_par.keys()) if dados_par else 'nenhum'}. "
+                    f"Tentando novamente no próximo ciclo."
+                )
+            return {}
+    
     @execucao_segura
     def executar(self, dados_entrada: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -216,15 +588,12 @@ class PluginDadosVelas(Plugin):
         Returns:
             dict: Dados de velas organizados por par e timeframe
         """
-        print(f"[DEBUG {self.PLUGIN_NAME}] Iniciando execução...")
-        
         try:
-            print(f"[DEBUG {self.PLUGIN_NAME}] Tentando obter exchange...")
-            exchange = self._obter_exchange()
-            
-            if not exchange:
-                erro_msg = "Exchange não disponível. Verifique conexão."
-                print(f"[DEBUG {self.PLUGIN_NAME}] ERRO: {erro_msg}")
+            # Verifica se plugin_conexao está disponível
+            if not self.plugin_conexao:
+                erro_msg = "Plugin de conexão não disponível. Verifique inicialização."
+                if self.logger:
+                    self.logger.error(f"[{self.PLUGIN_NAME}] {erro_msg}")
                 
                 # Log específico de erro do bot
                 if self.logger and hasattr(self.gerenciador_log, 'log_erro_bot'):
@@ -232,8 +601,7 @@ class PluginDadosVelas(Plugin):
                         origem=self.PLUGIN_NAME,
                         mensagem=erro_msg,
                         detalhes={
-                            "plugin_conexao": "None" if not self.plugin_conexao else "Ativo",
-                            "conexao_ativa": self.plugin_conexao.obter_status().get("conexao_ativa", False) if self.plugin_conexao else False,
+                            "plugin_conexao": "None",
                         }
                     )
                 
@@ -243,7 +611,26 @@ class PluginDadosVelas(Plugin):
                     "plugin": self.PLUGIN_NAME,
                 }
             
-            print(f"[DEBUG {self.PLUGIN_NAME}] Exchange obtida com sucesso!")
+            # Verifica se conexão está ativa
+            status_conexao = self.plugin_conexao.obter_status()
+            if not status_conexao.get("conexao_ativa", False):
+                erro_msg = "Conexão com exchange não está ativa."
+                if self.logger:
+                    self.logger.error(f"[{self.PLUGIN_NAME}] {erro_msg}")
+                
+                if self.logger and hasattr(self.gerenciador_log, 'log_erro_bot'):
+                    self.gerenciador_log.log_erro_bot(
+                        origem=self.PLUGIN_NAME,
+                        mensagem=erro_msg,
+                        detalhes=status_conexao
+                    )
+                
+                return {
+                    "status": "erro",
+                    "mensagem": erro_msg,
+                    "plugin": self.PLUGIN_NAME,
+                }
+            
             
             # Par e timeframe específicos (se fornecidos)
             par = dados_entrada.get("par") if dados_entrada else None
@@ -252,121 +639,1199 @@ class PluginDadosVelas(Plugin):
             pares_para_buscar = [par] if par else self.pares
             timeframes_para_buscar = [timeframe_especifico] if timeframe_especifico else list(self.CONFIG_VELAS.keys())
             
+            if self.logger:
+                self.logger.debug(
+                    f"[{self.PLUGIN_NAME}] Configuração de execução: "
+                    f"par específico={par}, timeframe específico={timeframe_especifico}, "
+                    f"total pares configurados={len(self.pares)}, "
+                    f"pares para buscar={len(pares_para_buscar)}"
+                )
+            
+            # Verifica se há pares para processar
+            if not pares_para_buscar:
+                erro_msg = "Nenhum par configurado para processar"
+                if self.logger:
+                    self.logger.warning(f"[{self.PLUGIN_NAME}] {erro_msg}")
+                return {
+                    "status": "erro",
+                    "mensagem": erro_msg,
+                    "plugin": self.PLUGIN_NAME,
+                    "dados": {},
+                }
+            
             resultados = {}
+            self._cancelamento_logado = False  # Reset flag de cancelamento
             
-            print(f"[DEBUG {self.PLUGIN_NAME}] Processando {len(pares_para_buscar)} par(es) e {len(timeframes_para_buscar)} timeframe(s)")
-            
-            for par_atual in pares_para_buscar:
-                resultados[par_atual] = {}
-                print(f"[DEBUG {self.PLUGIN_NAME}] Processando par: {par_atual}")
+            # Limita número de pares processados por ciclo para evitar sobrecarga da API
+            # Processa em lotes de 6-8 pares por ciclo, intercalando entre ciclos
+            total_pares = len(pares_para_buscar)
+            if total_pares > self._pares_por_lote:
+                # Calcula quais pares processar neste ciclo (intercalação)
+                num_lotes = (total_pares + self._pares_por_lote - 1) // self._pares_por_lote
+                inicio = (self._indice_lote * self._pares_por_lote) % total_pares
+                fim = inicio + self._pares_por_lote
                 
-                for tf in timeframes_para_buscar:
-                    try:
-                        quantidade = self.CONFIG_VELAS[tf]["quantidade"]
-                        print(f"[DEBUG {self.PLUGIN_NAME}] Buscando {quantidade} velas para {par_atual} {tf}...")
-                        
-                        # Busca velas
-                        velas = exchange.fetch_ohlcv(
-                            par_atual,
-                            timeframe=tf,
-                            limit=quantidade
+                # Seleciona pares para este ciclo (com wrap-around)
+                if fim <= total_pares:
+                    pares_este_ciclo = pares_para_buscar[inicio:fim]
+                else:
+                    # Wrap-around: pega do início até fim e do início até o que falta
+                    pares_este_ciclo = pares_para_buscar[inicio:] + pares_para_buscar[:fim - total_pares]
+                
+                lote_atual = self._indice_lote + 1
+                
+                # Avança índice para próximo ciclo
+                self._indice_lote = (self._indice_lote + 1) % num_lotes
+                
+                if self.logger:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] Processando lote {lote_atual}/{num_lotes}: "
+                        f"{len(pares_este_ciclo)} par(es) de {total_pares} total "
+                        f"(pares: {', '.join(pares_este_ciclo[:3])}{'...' if len(pares_este_ciclo) > 3 else ''})"
+                    )
+            else:
+                # Poucos pares - processa todos
+                pares_este_ciclo = pares_para_buscar
+                lote_atual = 1
+                num_lotes = 1
+                if self.logger:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] Processando {len(pares_este_ciclo)} par(es) "
+                        f"(todos os pares em um único ciclo)"
+                    )
+            
+            # Calcula número de workers: pares/5 para reduzir carga na API
+            # Com 6 pares e 1 worker (6/5=1), cada worker processa mais pares sequencialmente
+            # Isso reduz simultaneidade e evita sobrecarga da API
+            num_workers_efetivo = max(1, len(pares_este_ciclo) // 5)
+            
+            if self.logger:
+                self.logger.info(
+                    f"[{self.PLUGIN_NAME}] Usando {num_workers_efetivo} worker(s) "
+                    f"(calculado: {len(pares_este_ciclo)} pares ÷ 5 = {num_workers_efetivo})"
+                )
+            
+            # Obtém a exchange uma vez (será compartilhada com locks)
+            exchange = self._obter_exchange()
+            if not exchange:
+                erro_msg = "Exchange não disponível. Verifique conexão."
+                if self.logger:
+                    self.logger.error(f"[{self.PLUGIN_NAME}] {erro_msg}")
+                return {
+                    "status": "erro",
+                    "mensagem": erro_msg,
+                    "plugin": self.PLUGIN_NAME,
+                    "dados": {},
+                }
+            
+            if self.logger:
+                self.logger.info(
+                    f"[{self.PLUGIN_NAME}] Exchange obtida: {type(exchange).__name__ if exchange else 'None'}. "
+                    f"Iniciando processamento paralelo de {len(pares_este_ciclo)} par(es)..."
+                )
+            
+            # Processamento paralelo de múltiplos pares
+            def processar_par(par_atual: str) -> tuple:
+                """Processa um par e retorna (par, dados)"""
+                # Usa a exchange compartilhada (lock agora está dentro de _processar_par_incremental)
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            f"[{self.PLUGIN_NAME}] [THREAD] Iniciando processamento de {par_atual}"
                         )
+                    
+                    # Verifica se exchange ainda está disponível
+                    if exchange is None:
+                        if self.logger:
+                            self.logger.error(
+                                f"[{self.PLUGIN_NAME}] [THREAD] Exchange é None para {par_atual}!"
+                            )
+                        return (par_atual, {})
+                    
+                    # Lock agora está dentro de _processar_par_incremental, apenas nas chamadas à API
+                    dados_par = self._processar_par_incremental(par_atual, exchange, timeframes_para_buscar)
+                    if self.logger:
+                        self.logger.debug(
+                            f"[{self.PLUGIN_NAME}] [THREAD] Processamento de {par_atual} concluído: "
+                            f"{len(dados_par)} timeframes"
+                        )
+                    
+                    # Notifica callback se disponível (para processamento incremental)
+                    if self.callback_par_processado and dados_par:
+                        try:
+                            self.callback_par_processado(par_atual, dados_par)
+                        except Exception as e:
+                            if self.logger:
+                                self.logger.error(
+                                    f"[{self.PLUGIN_NAME}] Erro no callback para {par_atual}: {e}",
+                                    exc_info=True
+                                )
+                    
+                    return (par_atual, dados_par)
+                except Exception as e:
+                    # Loga erro REAL com detalhes completos
+                    tipo_erro = type(e).__name__
+                    msg_erro = str(e)
+                    import traceback
+                    traceback_completo = traceback.format_exc()
+                    
+                    if self.logger:
+                        self.logger.error(
+                            f"[{self.PLUGIN_NAME}] [THREAD] ERRO REAL ao processar par {par_atual}: "
+                            f"Tipo: {tipo_erro}, Mensagem: {msg_erro}",
+                            exc_info=True
+                        )
+                        self.logger.debug(
+                            f"[{self.PLUGIN_NAME}] [THREAD] Traceback completo para {par_atual}:\n{traceback_completo}"
+                        )
+                    
+                    return (par_atual, {
+                        "status": "erro", 
+                        "mensagem": msg_erro,
+                        "tipo_erro": tipo_erro,
+                        "traceback": traceback_completo
+                    })
+            
+            # Armazena número de workers efetivo para uso no semáforo
+            self._num_workers_efetivo = num_workers_efetivo
+            
+            # Executa processamento paralelo com número de workers calculado
+            with ThreadPoolExecutor(max_workers=num_workers_efetivo) as executor:
+                # Submete apenas os pares deste ciclo
+                futures = {executor.submit(processar_par, par_atual): par_atual 
+                          for par_atual in pares_este_ciclo}
+                
+                if self.logger:
+                    self.logger.debug(
+                        f"[{self.PLUGIN_NAME}] {len(futures)} future(s) submetido(s) para processamento paralelo"
+                    )
+                
+                # Processa resultados conforme completam (com timeout para evitar travamento)
+                futures_completados = 0
+                futures_pendentes = set(futures.keys())
+                # Timeout ajustado: com processamento sequencial de timeframes
+                # Cada par processa 3 timeframes sequencialmente (~12-15s por par)
+                # Com 1 worker e 6 pares sequenciais: 6 × 15s = 90s mínimo
+                # Adiciona margem de segurança: 120s
+                timeout_total = max(60, len(pares_este_ciclo) * 3 * 5)  # 5s por timeframe × 3 timeframes × número de pares, mínimo 60s
+                
+                inicio = time.time()
+                ultimo_log_progresso = inicio
+                
+                try:
+                    if self.logger:
+                        self.logger.info(
+                            f"[{self.PLUGIN_NAME}] Aguardando {len(futures)} future(s) com timeout de {timeout_total}s..."
+                        )
+                    
+                    for future in as_completed(futures, timeout=timeout_total):
+                        # Log de progresso a cada 5 segundos
+                        agora = time.time()
+                        if agora - ultimo_log_progresso >= 5.0:
+                            tempo_decorrido = agora - inicio
+                            if self.logger:
+                                self.logger.info(
+                                    f"[{self.PLUGIN_NAME}] Progresso: {futures_completados}/{len(futures)} "
+                                    f"completados após {tempo_decorrido:.1f}s, "
+                                    f"{len(futures_pendentes)} pendentes"
+                                )
+                            ultimo_log_progresso = agora
                         
-                        print(f"[DEBUG {self.PLUGIN_NAME}] {len(velas) if velas else 0} velas recebidas para {par_atual} {tf}")
-                        
-                        if not velas:
+                        # Verifica timeout geral
+                        if time.time() - inicio > timeout_total:
                             if self.logger:
                                 self.logger.warning(
-                                    f"[{self.PLUGIN_NAME}] Nenhuma vela encontrada para {par_atual} {tf}"
+                                    f"[{self.PLUGIN_NAME}] Timeout atingido após {timeout_total}s. "
+                                    f"Futures pendentes: {len(futures_pendentes)}"
                                 )
-                            continue
+                            break
+                        # Verifica cancelamento, mas processa o future que já completou primeiro
+                        cancelamento_detectado = self.cancelamento_solicitado()
                         
-                        # Processa velas
-                        velas_processadas = []
-                        ultima_vela = None
-                        
-                        for i, vela in enumerate(velas):
-                            timestamp, open_price, high, low, close, volume = vela
+                        try:
+                            # Timeout individual: cada par tem 3 requisições, com semáforo pode demorar ~10-15s
+                            par_atual, dados_par = future.result(timeout=20)  # Timeout individual de 20s
+                            futures_completados += 1
+                            futures_pendentes.discard(future)
                             
-                            vela_processada = {
-                                "timestamp": timestamp,
-                                "datetime": datetime.fromtimestamp(timestamp / 1000, tz=pytz.UTC).astimezone(self.timezone_sp),
-                                "open": float(open_price),
-                                "high": float(high),
-                                "low": float(low),
-                                "close": float(close),
-                                "volume": float(volume),
-                                "index": i,
-                                "fechada": self._vela_fechou(timestamp, tf),
+                            # Loga SEMPRE quando um future completa, mesmo que vazio
+                            if self.logger:
+                                if dados_par:
+                                    self.logger.debug(
+                                        f"[{self.PLUGIN_NAME}] [THREAD] Future completado para {par_atual}: "
+                                        f"{len(dados_par)} timeframes, "
+                                        f"total velas: {sum(len(dados_par.get(tf, {}).get('velas', [])) for tf in timeframes_para_buscar)}"
+                                    )
+                                else:
+                                    # Future completou mas retornou dados vazios - isso é um problema!
+                                    self.logger.warning(
+                                        f"[{self.PLUGIN_NAME}] [THREAD] Future {par_atual} completou mas retornou dados VAZIOS! "
+                                        f"Verificando exceção do future..."
+                                    )
+                                    # Verifica se há exceção no future
+                                    try:
+                                        if future.exception() is not None:
+                                            excecao = future.exception()
+                                            self.logger.error(
+                                                f"[{self.PLUGIN_NAME}] [THREAD] Future {par_atual} tem exceção: "
+                                                f"{type(excecao).__name__}: {str(excecao)}"
+                                            )
+                                    except Exception:
+                                        pass
+                            
+                            # Aceita par mesmo que tenha apenas alguns timeframes válidos
+                            if dados_par:
+                                # Filtra apenas timeframes com velas válidas
+                                timeframes_validos = {
+                                    tf: dados_tf for tf, dados_tf in dados_par.items()
+                                    if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                }
+                                
+                                if timeframes_validos:
+                                    resultados[par_atual] = timeframes_validos
+                                    
+                                    if self.logger:
+                                        total_velas = sum(
+                                            len(dados_tf.get("velas", []))
+                                            for dados_tf in timeframes_validos.values()
+                                        )
+                                        self.logger.info(
+                                            f"[PAIR {par_atual}] Velas carregadas: {total_velas} "
+                                            f"({len(timeframes_validos)}/{len(timeframes_para_buscar)} timeframes) — Pronto para análise"
+                                        )
+                                else:
+                                    # Nenhum timeframe válido - não adiciona aos resultados
+                                    # Será processado no próximo ciclo
+                                    if self.logger:
+                                        # Loga detalhes do que foi retornado para diagnóstico
+                                        timeframes_retornados = list(dados_par.keys()) if dados_par else []
+                                        self.logger.warning(
+                                            f"[{self.PLUGIN_NAME}] [THREAD] Par {par_atual} sem timeframes válidos. "
+                                            f"Timeframes retornados: {timeframes_retornados}, "
+                                            f"Esperados: {timeframes_para_buscar}. "
+                                            f"Dados completos: {dados_par}"
+                                        )
+                            else:
+                                # Future completou mas retornou None ou dict vazio
+                                if self.logger:
+                                    self.logger.warning(
+                                        f"[{self.PLUGIN_NAME}] [THREAD] Future {par_atual} retornou dados vazios/None. "
+                                        f"Verificando se há exceção..."
+                                    )
+                                    # Verifica exceção do future
+                                    try:
+                                        if future.exception() is not None:
+                                            excecao = future.exception()
+                                            import traceback
+                                            traceback_completo = traceback.format_exception(
+                                                type(excecao), excecao, excecao.__traceback__
+                                            )
+                                            self.logger.error(
+                                                f"[{self.PLUGIN_NAME}] [THREAD] Exceção no future {par_atual}: "
+                                                f"{type(excecao).__name__}: {str(excecao)}\n"
+                                                f"Traceback: {''.join(traceback_completo)}"
+                                            )
+                                    except Exception as e_check:
+                                        self.logger.debug(
+                                            f"[{self.PLUGIN_NAME}] [THREAD] Não foi possível verificar exceção do future {par_atual}: {e_check}"
+                                        )
+                            
+                            # Se cancelamento foi detectado, processa todos os futures já completados antes de sair
+                            if cancelamento_detectado:
+                                if not self._cancelamento_logado:
+                                    if self.logger:
+                                        self.logger.info(
+                                            f"[{self.PLUGIN_NAME}] Cancelamento solicitado. Processando futures já completados..."
+                                        )
+                                    self._cancelamento_logado = True
+                                
+                                # Processa todos os futures que já completaram mas ainda não foram processados
+                                # IMPORTANTE: Também processa futures que ainda não estão done(), mas que pertencem ao lote atual
+                                # Isso garante que o segundo par (que ainda está sendo processado) seja aguardado
+                                futures_para_processar = list(futures_pendentes)  # Processa TODOS os futures pendentes, não apenas os done()
+                                # Verifica também o cache do plugin
+                                # IMPORTANTE: Só verifica pares que pertencem ao lote atual (estão em futures)
+                                cache_pares_cancelamento = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                pares_lote_atual_cancelamento = set(futures.values())  # Apenas pares do lote atual
+                                
+                                for f in futures_para_processar:
+                                    par_f = futures.get(f, "DESCONHECIDO")
+                                    # Se o par já está no cache E pertence ao lote atual, conta como completado sem tentar obter o resultado
+                                    if par_f in cache_pares_cancelamento and par_f in pares_lote_atual_cancelamento:
+                                        futures_completados += 1
+                                        futures_pendentes.discard(f)
+                                        # Adiciona ao resultados para ser contado como "par com dados válidos"
+                                        # Obtém os dados do cache
+                                        dados_cache = cache_pares_cancelamento[par_f]
+                                        if dados_cache:
+                                            timeframes_validos_cache = {
+                                                tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                            }
+                                            if timeframes_validos_cache:
+                                                resultados[par_f] = timeframes_validos_cache
+                                                if self.logger:
+                                                    self.logger.info(
+                                                        f"[{self.PLUGIN_NAME}] Future {par_f} já está no cache, contando como completado (cancelamento) - {len(timeframes_validos_cache)} timeframe(s) válido(s)"
+                                                    )
+                                            else:
+                                                # Se não há timeframes válidos, ainda adiciona ao resultados com os dados disponíveis
+                                                # (pode ser que os dados ainda estejam sendo processados)
+                                                resultados[par_f] = dados_cache
+                                                if self.logger:
+                                                    self.logger.warning(
+                                                        f"[{self.PLUGIN_NAME}] Future {par_f} está no cache mas sem timeframes válidos, adicionando mesmo assim (cancelamento)"
+                                                    )
+                                        else:
+                                            if self.logger:
+                                                self.logger.warning(
+                                                    f"[{self.PLUGIN_NAME}] Future {par_f} está no cache mas dados_cache está vazio (cancelamento)"
+                                                )
+                                        if self.logger and par_f not in resultados:
+                                            self.logger.info(
+                                                f"[{self.PLUGIN_NAME}] Future {par_f} já está no cache, contando como completado (cancelamento)"
+                                            )
+                                        continue
+                                    
+                                    try:
+                                        # Aumentado para 2s para dar tempo ao callback executar
+                                        par_f, dados_f = f.result(timeout=2.0)
+                                        futures_completados += 1
+                                        futures_pendentes.discard(f)
+                                        
+                                        if dados_f:
+                                            timeframes_validos_f = {
+                                                tf: dados_tf for tf, dados_tf in dados_f.items()
+                                                if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                            }
+                                            if timeframes_validos_f:
+                                                resultados[par_f] = timeframes_validos_f
+                                                if self.logger:
+                                                    total_velas_f = sum(
+                                                        len(dados_tf.get("velas", []))
+                                                        for dados_tf in timeframes_validos_f.values()
+                                                    )
+                                                    self.logger.info(
+                                                        f"[PAIR {par_f}] Velas carregadas: {total_velas_f} "
+                                                        f"({len(timeframes_validos_f)}/{len(timeframes_para_buscar)} timeframes) — Pronto para análise"
+                                                    )
+                                    except TimeoutError:
+                                        # Future ainda não está pronto - aguarda um pouco e verifica o cache novamente
+                                        # Isso dá tempo ao callback executar e adicionar o par ao cache
+                                        time.sleep(0.5)  # Aguarda 500ms para o callback executar
+                                        
+                                        # Atualiza o cache (pode ter sido atualizado pelo callback)
+                                        cache_pares_cancelamento = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                        
+                                        # IMPORTANTE: Só conta se pertence ao lote atual
+                                        if par_f in cache_pares_cancelamento and par_f in pares_lote_atual_cancelamento:
+                                            futures_completados += 1
+                                            futures_pendentes.discard(f)
+                                            # Adiciona ao resultados para ser contado como "par com dados válidos"
+                                            # Obtém os dados do cache
+                                            dados_cache = cache_pares_cancelamento[par_f]
+                                            if dados_cache:
+                                                timeframes_validos_cache = {
+                                                    tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                    if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                                }
+                                                if timeframes_validos_cache:
+                                                    resultados[par_f] = timeframes_validos_cache
+                                            if self.logger:
+                                                self.logger.info(
+                                                    f"[{self.PLUGIN_NAME}] Future {par_f} result() deu timeout mas está no cache após delay, contando como completado"
+                                                )
+                                        else:
+                                            # Se ainda não está no cache, aguarda mais um pouco e verifica novamente
+                                            # (a thread pode estar demorando mais para processar)
+                                            time.sleep(0.5)  # Aguarda mais 500ms
+                                            cache_pares_cancelamento = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                            
+                                            if par_f in cache_pares_cancelamento and par_f in pares_lote_atual_cancelamento:
+                                                futures_completados += 1
+                                                futures_pendentes.discard(f)
+                                                # Adiciona ao resultados
+                                                dados_cache = cache_pares_cancelamento[par_f]
+                                                if dados_cache:
+                                                    timeframes_validos_cache = {
+                                                        tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                        if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                                    }
+                                                    if timeframes_validos_cache:
+                                                        resultados[par_f] = timeframes_validos_cache
+                                                if self.logger:
+                                                    self.logger.info(
+                                                        f"[{self.PLUGIN_NAME}] Future {par_f} result() deu timeout mas está no cache após segundo delay, contando como completado"
+                                                    )
+                                            else:
+                                                # Tenta obter o resultado novamente após o delay
+                                                try:
+                                                    par_f, dados_f = f.result(timeout=1.0)
+                                                    futures_completados += 1
+                                                    futures_pendentes.discard(f)
+                                                    if dados_f:
+                                                        timeframes_validos_f = {
+                                                            tf: dados_tf for tf, dados_tf in dados_f.items()
+                                                            if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                                        }
+                                                        if timeframes_validos_f:
+                                                            resultados[par_f] = timeframes_validos_f
+                                                            if self.logger:
+                                                                total_velas_f = sum(
+                                                                    len(dados_tf.get("velas", []))
+                                                                    for dados_tf in timeframes_validos_f.values()
+                                                                )
+                                                                self.logger.info(
+                                                                    f"[PAIR {par_f}] Velas carregadas após delay: {total_velas_f} "
+                                                                    f"({len(timeframes_validos_f)}/{len(timeframes_para_buscar)} timeframes)"
+                                                                )
+                                                except Exception:
+                                                    # Mesmo após o delay, não conseguiu - conta como completado (já tentou)
+                                                    futures_completados += 1
+                                                    futures_pendentes.discard(f)
+                                    except Exception:
+                                        # Future teve erro, mas conta como completado (já tentou)
+                                        futures_completados += 1
+                                        futures_pendentes.discard(f)
+                                
+                                # Cancela apenas futures pendentes que ainda não completaram
+                                for f in futures_pendentes:
+                                    if not f.done():
+                                        f.cancel()
+                                
+                                # Agora sim, sai do loop
+                                break
+                        except TimeoutError:
+                            par_atual = futures.get(future, "DESCONHECIDO")
+                            futures_pendentes.discard(future)
+                            # Loga timeout com detalhes
+                            if self.logger:
+                                self.logger.warning(
+                                    f"[{self.PLUGIN_NAME}] [THREAD] TIMEOUT ao aguardar resultado de {par_atual} "
+                                    f"(future não completou em {timeout_total}s)"
+                                )
+                            resultados[par_atual] = {
+                                "status": "timeout", 
+                                "mensagem": f"Timeout após {timeout_total}s",
+                                "par": par_atual
                             }
                             
-                            velas_processadas.append(vela_processada)
+                            # Se cancelamento foi detectado, processa todos os futures já completados antes de sair
+                            if cancelamento_detectado:
+                                if not self._cancelamento_logado:
+                                    if self.logger:
+                                        self.logger.info(
+                                            f"[{self.PLUGIN_NAME}] Cancelamento solicitado. Processando futures já completados..."
+                                        )
+                                    self._cancelamento_logado = True
+                                
+                                # Processa todos os futures que já completaram mas ainda não foram processados
+                                # IMPORTANTE: Também processa futures que ainda não estão done(), mas que pertencem ao lote atual
+                                # Isso garante que o segundo par (que ainda está sendo processado) seja aguardado
+                                futures_para_processar = list(futures_pendentes)  # Processa TODOS os futures pendentes, não apenas os done()
+                                # Verifica também o cache do plugin
+                                # IMPORTANTE: Só verifica pares que pertencem ao lote atual (estão em futures)
+                                cache_pares_cancelamento = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                pares_lote_atual_cancelamento = set(futures.values())  # Apenas pares do lote atual
+                                
+                                for f in futures_para_processar:
+                                    par_f = futures.get(f, "DESCONHECIDO")
+                                    # Se o par já está no cache E pertence ao lote atual, conta como completado sem tentar obter o resultado
+                                    if par_f in cache_pares_cancelamento and par_f in pares_lote_atual_cancelamento:
+                                        futures_completados += 1
+                                        futures_pendentes.discard(f)
+                                        # Adiciona ao resultados para ser contado como "par com dados válidos"
+                                        # Obtém os dados do cache
+                                        dados_cache = cache_pares_cancelamento[par_f]
+                                        if dados_cache:
+                                            timeframes_validos_cache = {
+                                                tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                            }
+                                            if timeframes_validos_cache:
+                                                resultados[par_f] = timeframes_validos_cache
+                                                if self.logger:
+                                                    self.logger.info(
+                                                        f"[{self.PLUGIN_NAME}] Future {par_f} já está no cache, contando como completado (cancelamento) - {len(timeframes_validos_cache)} timeframe(s) válido(s)"
+                                                    )
+                                            else:
+                                                # Se não há timeframes válidos, ainda adiciona ao resultados com os dados disponíveis
+                                                # (pode ser que os dados ainda estejam sendo processados)
+                                                resultados[par_f] = dados_cache
+                                                if self.logger:
+                                                    self.logger.warning(
+                                                        f"[{self.PLUGIN_NAME}] Future {par_f} está no cache mas sem timeframes válidos, adicionando mesmo assim (cancelamento)"
+                                                    )
+                                        else:
+                                            if self.logger:
+                                                self.logger.warning(
+                                                    f"[{self.PLUGIN_NAME}] Future {par_f} está no cache mas dados_cache está vazio (cancelamento)"
+                                                )
+                                        if self.logger and par_f not in resultados:
+                                            self.logger.info(
+                                                f"[{self.PLUGIN_NAME}] Future {par_f} já está no cache, contando como completado (cancelamento)"
+                                            )
+                                        continue
+                                    
+                                    try:
+                                        # Aumentado para 2s para dar tempo ao callback executar
+                                        par_f, dados_f = f.result(timeout=2.0)
+                                        futures_completados += 1
+                                        futures_pendentes.discard(f)
+                                        
+                                        if dados_f:
+                                            timeframes_validos_f = {
+                                                tf: dados_tf for tf, dados_tf in dados_f.items()
+                                                if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                            }
+                                            if timeframes_validos_f:
+                                                resultados[par_f] = timeframes_validos_f
+                                                if self.logger:
+                                                    total_velas_f = sum(
+                                                        len(dados_tf.get("velas", []))
+                                                        for dados_tf in timeframes_validos_f.values()
+                                                    )
+                                                    self.logger.info(
+                                                        f"[PAIR {par_f}] Velas carregadas: {total_velas_f} "
+                                                        f"({len(timeframes_validos_f)}/{len(timeframes_para_buscar)} timeframes) — Pronto para análise"
+                                                    )
+                                    except TimeoutError:
+                                        # Future ainda não está pronto - aguarda um pouco e verifica o cache novamente
+                                        # Isso dá tempo ao callback executar e adicionar o par ao cache
+                                        time.sleep(0.5)  # Aguarda 500ms para o callback executar
+                                        
+                                        # Atualiza o cache (pode ter sido atualizado pelo callback)
+                                        cache_pares_cancelamento = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                        
+                                        # IMPORTANTE: Só conta se pertence ao lote atual
+                                        if par_f in cache_pares_cancelamento and par_f in pares_lote_atual_cancelamento:
+                                            futures_completados += 1
+                                            futures_pendentes.discard(f)
+                                            # Adiciona ao resultados para ser contado como "par com dados válidos"
+                                            # Obtém os dados do cache
+                                            dados_cache = cache_pares_cancelamento[par_f]
+                                            if dados_cache:
+                                                timeframes_validos_cache = {
+                                                    tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                    if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                                }
+                                                if timeframes_validos_cache:
+                                                    resultados[par_f] = timeframes_validos_cache
+                                            if self.logger:
+                                                self.logger.info(
+                                                    f"[{self.PLUGIN_NAME}] Future {par_f} result() deu timeout mas está no cache após delay, contando como completado"
+                                                )
+                                        else:
+                                            # Se ainda não está no cache, aguarda mais um pouco e verifica novamente
+                                            # (a thread pode estar demorando mais para processar)
+                                            time.sleep(0.5)  # Aguarda mais 500ms
+                                            cache_pares_cancelamento = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                            
+                                            if par_f in cache_pares_cancelamento and par_f in pares_lote_atual_cancelamento:
+                                                futures_completados += 1
+                                                futures_pendentes.discard(f)
+                                                # Adiciona ao resultados
+                                                dados_cache = cache_pares_cancelamento[par_f]
+                                                if dados_cache:
+                                                    timeframes_validos_cache = {
+                                                        tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                        if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                                    }
+                                                    if timeframes_validos_cache:
+                                                        resultados[par_f] = timeframes_validos_cache
+                                                if self.logger:
+                                                    self.logger.info(
+                                                        f"[{self.PLUGIN_NAME}] Future {par_f} result() deu timeout mas está no cache após segundo delay, contando como completado"
+                                                    )
+                                            else:
+                                                # Tenta obter o resultado novamente após o delay
+                                                try:
+                                                    par_f, dados_f = f.result(timeout=1.0)
+                                                    futures_completados += 1
+                                                    futures_pendentes.discard(f)
+                                                    if dados_f:
+                                                        timeframes_validos_f = {
+                                                            tf: dados_tf for tf, dados_tf in dados_f.items()
+                                                            if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                                        }
+                                                        if timeframes_validos_f:
+                                                            resultados[par_f] = timeframes_validos_f
+                                                            if self.logger:
+                                                                total_velas_f = sum(
+                                                                    len(dados_tf.get("velas", []))
+                                                                    for dados_tf in timeframes_validos_f.values()
+                                                                )
+                                                                self.logger.info(
+                                                                    f"[PAIR {par_f}] Velas carregadas após delay: {total_velas_f} "
+                                                                    f"({len(timeframes_validos_f)}/{len(timeframes_para_buscar)} timeframes)"
+                                                                )
+                                                except Exception:
+                                                    # Mesmo após o delay, não conseguiu - conta como completado (já tentou)
+                                                    futures_completados += 1
+                                                    futures_pendentes.discard(f)
+                                    except Exception:
+                                        # Future teve erro, mas conta como completado (já tentou)
+                                        futures_completados += 1
+                                        futures_pendentes.discard(f)
+                                
+                                # Cancela apenas futures pendentes que ainda não completaram
+                                for f in futures_pendentes:
+                                    if not f.done():
+                                        f.cancel()
+                                
+                                # Agora sim, sai do loop
+                                break
+                        except Exception as e:
+                            par_atual = futures.get(future, "DESCONHECIDO")
+                            futures_completados += 1
+                            futures_pendentes.discard(future)
                             
-                            if i == len(velas) - 1:
-                                ultima_vela = vela_processada
+                            # Loga erro REAL com todos os detalhes
+                            tipo_erro = type(e).__name__
+                            msg_erro = str(e)
+                            import traceback
+                            traceback_completo = traceback.format_exc()
+                            
+                            if self.logger:
+                                self.logger.error(
+                                    f"[{self.PLUGIN_NAME}] [THREAD] ERRO REAL ao obter resultado de {par_atual}: "
+                                    f"Tipo: {tipo_erro}, Mensagem: {msg_erro}",
+                                    exc_info=True
+                                )
+                                self.logger.debug(
+                                    f"[{self.PLUGIN_NAME}] [THREAD] Traceback completo para {par_atual}:\n{traceback_completo}"
+                                )
+                            
+                            resultados[par_atual] = {
+                                "status": "erro", 
+                                "mensagem": msg_erro,
+                                "tipo_erro": tipo_erro,
+                                "traceback": traceback_completo,
+                                "par": par_atual
+                            }
+                            
+                            # Se cancelamento foi detectado, processa todos os futures já completados antes de sair
+                            if cancelamento_detectado:
+                                if not self._cancelamento_logado:
+                                    if self.logger:
+                                        self.logger.info(
+                                            f"[{self.PLUGIN_NAME}] Cancelamento solicitado. Processando futures já completados..."
+                                        )
+                                    self._cancelamento_logado = True
+                                
+                                # Processa todos os futures que já completaram mas ainda não foram processados
+                                # IMPORTANTE: Também processa futures que ainda não estão done(), mas que pertencem ao lote atual
+                                # Isso garante que o segundo par (que ainda está sendo processado) seja aguardado
+                                futures_para_processar = list(futures_pendentes)  # Processa TODOS os futures pendentes, não apenas os done()
+                                # Verifica também o cache do plugin
+                                # IMPORTANTE: Só verifica pares que pertencem ao lote atual (estão em futures)
+                                cache_pares_cancelamento = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                pares_lote_atual_cancelamento = set(futures.values())  # Apenas pares do lote atual
+                                
+                                for f in futures_para_processar:
+                                    par_f = futures.get(f, "DESCONHECIDO")
+                                    # Se o par já está no cache E pertence ao lote atual, conta como completado sem tentar obter o resultado
+                                    if par_f in cache_pares_cancelamento and par_f in pares_lote_atual_cancelamento:
+                                        futures_completados += 1
+                                        futures_pendentes.discard(f)
+                                        # Adiciona ao resultados para ser contado como "par com dados válidos"
+                                        # Obtém os dados do cache
+                                        dados_cache = cache_pares_cancelamento[par_f]
+                                        if dados_cache:
+                                            timeframes_validos_cache = {
+                                                tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                            }
+                                            if timeframes_validos_cache:
+                                                resultados[par_f] = timeframes_validos_cache
+                                                if self.logger:
+                                                    self.logger.info(
+                                                        f"[{self.PLUGIN_NAME}] Future {par_f} já está no cache, contando como completado (cancelamento) - {len(timeframes_validos_cache)} timeframe(s) válido(s)"
+                                                    )
+                                            else:
+                                                # Se não há timeframes válidos, ainda adiciona ao resultados com os dados disponíveis
+                                                # (pode ser que os dados ainda estejam sendo processados)
+                                                resultados[par_f] = dados_cache
+                                                if self.logger:
+                                                    self.logger.warning(
+                                                        f"[{self.PLUGIN_NAME}] Future {par_f} está no cache mas sem timeframes válidos, adicionando mesmo assim (cancelamento)"
+                                                    )
+                                        else:
+                                            if self.logger:
+                                                self.logger.warning(
+                                                    f"[{self.PLUGIN_NAME}] Future {par_f} está no cache mas dados_cache está vazio (cancelamento)"
+                                                )
+                                        if self.logger and par_f not in resultados:
+                                            self.logger.info(
+                                                f"[{self.PLUGIN_NAME}] Future {par_f} já está no cache, contando como completado (cancelamento)"
+                                            )
+                                        continue
+                                    
+                                    try:
+                                        # Aumentado para 2s para dar tempo ao callback executar
+                                        par_f, dados_f = f.result(timeout=2.0)
+                                        futures_completados += 1
+                                        futures_pendentes.discard(f)
+                                        
+                                        if dados_f:
+                                            timeframes_validos_f = {
+                                                tf: dados_tf for tf, dados_tf in dados_f.items()
+                                                if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                            }
+                                            if timeframes_validos_f:
+                                                resultados[par_f] = timeframes_validos_f
+                                                if self.logger:
+                                                    total_velas_f = sum(
+                                                        len(dados_tf.get("velas", []))
+                                                        for dados_tf in timeframes_validos_f.values()
+                                                    )
+                                                    self.logger.info(
+                                                        f"[PAIR {par_f}] Velas carregadas: {total_velas_f} "
+                                                        f"({len(timeframes_validos_f)}/{len(timeframes_para_buscar)} timeframes) — Pronto para análise"
+                                                    )
+                                    except TimeoutError:
+                                        # Future ainda não está pronto - aguarda um pouco e verifica o cache novamente
+                                        # Isso dá tempo ao callback executar e adicionar o par ao cache
+                                        time.sleep(0.5)  # Aguarda 500ms para o callback executar
+                                        
+                                        # Atualiza o cache (pode ter sido atualizado pelo callback)
+                                        cache_pares_cancelamento = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                        
+                                        # IMPORTANTE: Só conta se pertence ao lote atual
+                                        if par_f in cache_pares_cancelamento and par_f in pares_lote_atual_cancelamento:
+                                            futures_completados += 1
+                                            futures_pendentes.discard(f)
+                                            # Adiciona ao resultados para ser contado como "par com dados válidos"
+                                            # Obtém os dados do cache
+                                            dados_cache = cache_pares_cancelamento[par_f]
+                                            if dados_cache:
+                                                timeframes_validos_cache = {
+                                                    tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                    if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                                }
+                                                if timeframes_validos_cache:
+                                                    resultados[par_f] = timeframes_validos_cache
+                                            if self.logger:
+                                                self.logger.info(
+                                                    f"[{self.PLUGIN_NAME}] Future {par_f} result() deu timeout mas está no cache após delay, contando como completado"
+                                                )
+                                        else:
+                                            # Se ainda não está no cache, aguarda mais um pouco e verifica novamente
+                                            # (a thread pode estar demorando mais para processar)
+                                            time.sleep(0.5)  # Aguarda mais 500ms
+                                            cache_pares_cancelamento = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                            
+                                            if par_f in cache_pares_cancelamento and par_f in pares_lote_atual_cancelamento:
+                                                futures_completados += 1
+                                                futures_pendentes.discard(f)
+                                                # Adiciona ao resultados
+                                                dados_cache = cache_pares_cancelamento[par_f]
+                                                if dados_cache:
+                                                    timeframes_validos_cache = {
+                                                        tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                        if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                                    }
+                                                    if timeframes_validos_cache:
+                                                        resultados[par_f] = timeframes_validos_cache
+                                                if self.logger:
+                                                    self.logger.info(
+                                                        f"[{self.PLUGIN_NAME}] Future {par_f} result() deu timeout mas está no cache após segundo delay, contando como completado"
+                                                    )
+                                            else:
+                                                # Tenta obter o resultado novamente após o delay
+                                                try:
+                                                    par_f, dados_f = f.result(timeout=1.0)
+                                                    futures_completados += 1
+                                                    futures_pendentes.discard(f)
+                                                    if dados_f:
+                                                        timeframes_validos_f = {
+                                                            tf: dados_tf for tf, dados_tf in dados_f.items()
+                                                            if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                                        }
+                                                        if timeframes_validos_f:
+                                                            resultados[par_f] = timeframes_validos_f
+                                                            if self.logger:
+                                                                total_velas_f = sum(
+                                                                    len(dados_tf.get("velas", []))
+                                                                    for dados_tf in timeframes_validos_f.values()
+                                                                )
+                                                                self.logger.info(
+                                                                    f"[PAIR {par_f}] Velas carregadas após delay: {total_velas_f} "
+                                                                    f"({len(timeframes_validos_f)}/{len(timeframes_para_buscar)} timeframes)"
+                                                                )
+                                                except Exception:
+                                                    # Mesmo após o delay, não conseguiu - conta como completado (já tentou)
+                                                    futures_completados += 1
+                                                    futures_pendentes.discard(f)
+                                    except Exception:
+                                        # Future teve erro, mas conta como completado (já tentou)
+                                        futures_completados += 1
+                                        futures_pendentes.discard(f)
+                                
+                                # Cancela apenas futures pendentes que ainda não completaram
+                                for f in futures_pendentes:
+                                    if not f.done():
+                                        f.cancel()
+                                
+                                # Agora sim, sai do loop
+                                break
+                except TimeoutError:
+                    # Timeout do as_completed - pode ter alguns futures que já completaram
+                    tempo_decorrido = time.time() - inicio
+                    if self.logger:
+                        self.logger.warning(
+                            f"[{self.PLUGIN_NAME}] Timeout do as_completed após {tempo_decorrido:.2f}s. "
+                            f"Futures completados: {futures_completados}/{len(futures)}, "
+                            f"Pendentes: {len(futures_pendentes)}"
+                        )
+                
+                # Tenta coletar resultados dos futures que já completaram mas não foram processados
+                # Isso pode acontecer se o timeout foi atingido ou cancelamento foi solicitado
+                # enquanto processávamos outros futures
+                futures_para_verificar = list(futures_pendentes)
+                # Verifica também o cache do plugin para identificar pares processados
+                # IMPORTANTE: Só verifica pares que pertencem ao lote atual (estão em futures)
+                cache_pares = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                pares_lote_atual = set(futures.values())  # Apenas pares do lote atual
+                
+                for future in futures_para_verificar:
+                    if future.done():
+                        par_atual = futures.get(future, "DESCONHECIDO")
+                        try:
+                            # Se o par já está em resultados OU (no cache E pertence ao lote atual),
+                            # significa que foi processado mas não contado
+                            if par_atual in resultados:
+                                # Já está em resultados, só conta
+                                futures_completados += 1
+                                futures_pendentes.discard(future)
+                                if self.logger:
+                                    self.logger.info(
+                                        f"[{self.PLUGIN_NAME}] Future {par_atual} já estava processado (resultados), contando como completado"
+                                    )
+                            elif par_atual in cache_pares and par_atual in pares_lote_atual:
+                                # Está no cache mas não em resultados - adiciona ao resultados
+                                futures_completados += 1
+                                futures_pendentes.discard(future)
+                                # Adiciona ao resultados para ser contado como "par com dados válidos"
+                                dados_cache = cache_pares[par_atual]
+                                if dados_cache:
+                                    timeframes_validos_cache = {
+                                        tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                        if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                    }
+                                    if timeframes_validos_cache:
+                                        resultados[par_atual] = timeframes_validos_cache
+                                if self.logger:
+                                    self.logger.info(
+                                        f"[{self.PLUGIN_NAME}] Future {par_atual} já estava processado (cache), contando como completado"
+                                    )
+                            else:
+                                # Tenta obter o resultado do future
+                                try:
+                                    par_atual, dados_par = future.result(timeout=2.0)  # Aumentado para 2s para dar mais tempo
+                                    futures_completados += 1
+                                    futures_pendentes.discard(future)
+                                    
+                                    if dados_par and any(tf in dados_par for tf in timeframes_para_buscar):
+                                        resultados[par_atual] = dados_par
+                                        if self.logger:
+                                            total_velas = sum(
+                                                len(dados_par.get(tf, {}).get("velas", []))
+                                                for tf in timeframes_para_buscar
+                                            )
+                                            self.logger.info(
+                                                f"[{self.PLUGIN_NAME}] Future {par_atual} coletado após timeout/cancelamento: "
+                                                f"{total_velas} velas"
+                                            )
+                                except TimeoutError:
+                                    # Future ainda não está pronto - aguarda um pouco e verifica o cache novamente
+                                    time.sleep(0.5)  # Aguarda 500ms para o callback executar
+                                    
+                                    # Atualiza o cache (pode ter sido atualizado pelo callback)
+                                    cache_pares = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                    
+                                    # Verifica se está no cache
+                                    if par_atual in cache_pares and par_atual in pares_lote_atual:
+                                        futures_completados += 1
+                                        futures_pendentes.discard(future)
+                                        # Adiciona ao resultados para ser contado como "par com dados válidos"
+                                        # Obtém os dados do cache
+                                        dados_cache = cache_pares[par_atual]
+                                        if dados_cache:
+                                            timeframes_validos_cache = {
+                                                tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                            }
+                                            if timeframes_validos_cache:
+                                                resultados[par_atual] = timeframes_validos_cache
+                                        if self.logger:
+                                            self.logger.info(
+                                                f"[{self.PLUGIN_NAME}] Future {par_atual} está done() mas result() deu timeout, "
+                                                f"porém está no cache após delay - contando como completado"
+                                            )
+                                    else:
+                                        # Se ainda não está no cache, aguarda mais um pouco e verifica novamente
+                                        # (a thread pode estar demorando mais para processar)
+                                        time.sleep(0.5)  # Aguarda mais 500ms
+                                        cache_pares = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                        
+                                        if par_atual in cache_pares and par_atual in pares_lote_atual:
+                                            futures_completados += 1
+                                            futures_pendentes.discard(future)
+                                            # Adiciona ao resultados
+                                            dados_cache = cache_pares[par_atual]
+                                            if dados_cache:
+                                                timeframes_validos_cache = {
+                                                    tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                                    if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                                }
+                                                if timeframes_validos_cache:
+                                                    resultados[par_atual] = timeframes_validos_cache
+                                            if self.logger:
+                                                self.logger.info(
+                                                    f"[{self.PLUGIN_NAME}] Future {par_atual} está done() mas result() deu timeout, "
+                                                    f"porém está no cache após segundo delay - contando como completado"
+                                                )
+                                        else:
+                                            # Tenta obter o resultado novamente após o delay
+                                            try:
+                                                par_atual, dados_par = future.result(timeout=1.0)
+                                                futures_completados += 1
+                                                futures_pendentes.discard(future)
+                                                if dados_par and any(tf in dados_par for tf in timeframes_para_buscar):
+                                                    resultados[par_atual] = dados_par
+                                                    if self.logger:
+                                                        total_velas = sum(
+                                                            len(dados_par.get(tf, {}).get("velas", []))
+                                                            for tf in timeframes_para_buscar
+                                                        )
+                                                        self.logger.info(
+                                                            f"[{self.PLUGIN_NAME}] Future {par_atual} coletado após delay: "
+                                                            f"{total_velas} velas"
+                                                        )
+                                            except Exception:
+                                                # Mesmo após o delay, não conseguiu - conta como completado (já tentou)
+                                                futures_completados += 1
+                                                futures_pendentes.discard(future)
+                        except TimeoutError:
+                            # Este except captura o TimeoutError do try externo (não deveria acontecer, mas por segurança)
+                            pass
+                        except Exception as e:
+                            # Future completou com exceção - conta como completado mas com erro
+                            futures_completados += 1
+                            futures_pendentes.discard(future)
+                            if self.logger:
+                                self.logger.debug(
+                                    f"[{self.PLUGIN_NAME}] Future {par_atual} completou com exceção: {type(e).__name__}: {str(e)}"
+                                )
+                
+                # Verifica se há futures pendentes que não completaram
+                # IMPORTANTE: Só marca como "não completou" se o par NÃO está em resultados OU no cache
+                # (pode ter completado mas não ter sido processado pelo loop as_completed)
+                if futures_pendentes:
+                    futures_nao_completados = []
+                    # Primeiro, verifica se há futures que completaram mas não foram contados
+                    futures_para_verificar_contagem = list(futures_pendentes)
+                    # Verifica também o cache do plugin (pode ter sido atualizado durante o processamento)
+                    # IMPORTANTE: Só verifica pares que pertencem ao lote atual (estão em futures)
+                    cache_pares_final = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                    pares_lote_atual_final = set(futures.values())  # Apenas pares do lote atual
+                    
+                    for future in futures_para_verificar_contagem:
+                        if future.done():
+                            par_atual = futures.get(future, "DESCONHECIDO")
+                            # Se o par está em resultados OU (no cache E pertence ao lote atual),
+                            # significa que foi processado pela thread mas não foi contado
+                            if par_atual in resultados:
+                                # Já está em resultados, só conta
+                                futures_completados += 1
+                                futures_pendentes.discard(future)
+                                if self.logger:
+                                    self.logger.info(
+                                        f"[{self.PLUGIN_NAME}] Future {par_atual} já estava processado (resultados), contando como completado (verificação final)"
+                                    )
+                            elif par_atual in cache_pares_final and par_atual in pares_lote_atual_final:
+                                # Está no cache mas não em resultados - adiciona ao resultados
+                                futures_completados += 1
+                                futures_pendentes.discard(future)
+                                # Adiciona ao resultados para ser contado como "par com dados válidos"
+                                dados_cache = cache_pares_final[par_atual]
+                                if dados_cache:
+                                    timeframes_validos_cache = {
+                                        tf: dados_tf for tf, dados_tf in dados_cache.items()
+                                        if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                    }
+                                    if timeframes_validos_cache:
+                                        resultados[par_atual] = timeframes_validos_cache
+                                if self.logger:
+                                    self.logger.info(
+                                        f"[{self.PLUGIN_NAME}] Future {par_atual} já estava processado (cache), contando como completado (verificação final)"
+                                    )
+                    
+                    # Agora verifica futures que realmente não completaram
+                    # IMPORTANTE: Verifica tanto futures que não estão done() quanto futures que estão done() mas não foram processados
+                    for future in futures_pendentes:
+                        par_atual = futures.get(future, "DESCONHECIDO")
+                        # Só marca como não completou se o par NÃO está em resultados E 
+                        # (NÃO está no cache OU não pertence ao lote atual)
+                        # Se o par pertence ao lote atual e está no cache, foi processado - não marca como não completou
+                        if par_atual not in resultados and not (par_atual in cache_pares_final and par_atual in pares_lote_atual_final):
+                            # Se o future está done() mas não está no cache/resultados, pode ter completado com erro ou dados vazios
+                            # Se o future não está done(), realmente não completou
+                            if not future.done() or (future.done() and future.exception() is None):
+                                futures_nao_completados.append(future)
+                    
+                    if futures_nao_completados:
+                        taxa_falha = len(futures_nao_completados) / len(futures)
                         
-                        # Armazena última vela fechada
-                        cache_key = f"{par_atual}_{tf}"
-                        if ultima_vela and ultima_vela["fechada"]:
-                            self._ultima_vela_fechada[cache_key] = ultima_vela
+                        # Loga erro REAL de cada future que não completou
+                        for future in futures_nao_completados:
+                            par_atual = futures.get(future, "DESCONHECIDO")
+                            
+                            # Tenta obter exceção do future se disponível
+                            try:
+                                # Se o future tem exceção, tenta obtê-la
+                                if future.exception() is not None:
+                                    excecao = future.exception()
+                                    tipo_erro = type(excecao).__name__
+                                    msg_erro = str(excecao)
+                                    import traceback
+                                    traceback_completo = traceback.format_exception(
+                                        type(excecao), excecao, excecao.__traceback__
+                                    )
+                                    
+                                    if self.logger:
+                                        self.logger.error(
+                                            f"[{self.PLUGIN_NAME}] [THREAD] ERRO REAL do future {par_atual}: "
+                                            f"Tipo: {tipo_erro}, Mensagem: {msg_erro}"
+                                        )
+                                        self.logger.debug(
+                                            f"[{self.PLUGIN_NAME}] [THREAD] Traceback do future {par_atual}:\n"
+                                            f"{''.join(traceback_completo)}"
+                                        )
+                                else:
+                                    # Future não tem exceção mas não completou (timeout ou cancelado)
+                                    # Verifica o cache novamente ANTES de logar o warning (pode ter sido adicionado pelo callback)
+                                    cache_pares_warning = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                                    if par_atual not in resultados and par_atual not in cache_pares_warning:
+                                        # Realmente não completou - loga warning
+                                        if self.logger:
+                                            self.logger.warning(
+                                                f"[{self.PLUGIN_NAME}] [THREAD] Future {par_atual} não completou "
+                                                f"(sem exceção - provavelmente timeout ou cancelado)"
+                                            )
+                                    else:
+                                        # Par está no cache ou resultados - foi processado, não loga warning
+                                        if self.logger:
+                                            self.logger.debug(
+                                                f"[{self.PLUGIN_NAME}] [THREAD] Future {par_atual} estava em cache/resultados, "
+                                                f"não logando warning (foi processado com sucesso)"
+                                            )
+                            except Exception as e:
+                                # Erro ao tentar obter exceção do future
+                                if self.logger:
+                                    self.logger.error(
+                                        f"[{self.PLUGIN_NAME}] [THREAD] Erro ao obter exceção do future {par_atual}: {e}"
+                                    )
                         
-                        resultados[par_atual][tf] = {
-                            "velas": velas_processadas,
-                            "quantidade": len(velas_processadas),
-                            "ultima_vela": ultima_vela,
-                            "ultima_vela_fechada": ultima_vela["fechada"] if ultima_vela else False,
-                        }
+                        # Loga resumo
+                        if taxa_falha > 0.5:
+                            if self.logger:
+                                self.logger.warning(
+                                    f"[{self.PLUGIN_NAME}] {len(futures_nao_completados)}/{len(futures)} "
+                                    f"future(s) não completaram ({taxa_falha*100:.0f}%): "
+                                    f"{[futures[f] for f in futures_nao_completados[:5]]}"
+                                    f"{'...' if len(futures_nao_completados) > 5 else ''}"
+                                )
+                        else:
+                            # Falha parcial - loga como debug mas com detalhes
+                            if self.logger:
+                                self.logger.debug(
+                                    f"[{self.PLUGIN_NAME}] {len(futures_nao_completados)} future(s) não completaram "
+                                    f"(normal com processamento em lotes). Ver logs acima para detalhes."
+                                )
                         
-                        # Log
-                        if self.logger:
-                            status = "FECHADA" if ultima_vela and ultima_vela["fechada"] else "ABERTA"
-                            self.logger.debug(
-                                f"[{self.PLUGIN_NAME}] {par_atual} {tf}: "
-                                f"{len(velas_processadas)} velas carregadas. "
-                                f"Última vela: {status}"
-                            )
-                        
-                    except Exception as e:
-                        erro_msg = f"Erro ao buscar velas para {par_atual} {tf}: {str(e)}"
-                        print(f"[DEBUG {self.PLUGIN_NAME}] ERRO: {erro_msg}")
-                        
-                        # Log específico de erro do bot
-                        if self.logger and hasattr(self.gerenciador_log, 'log_erro_bot'):
-                            self.gerenciador_log.log_erro_bot(
-                                origem=self.PLUGIN_NAME,
-                                mensagem=erro_msg,
-                                detalhes={
-                                    "par": par_atual,
-                                    "timeframe": tf,
-                                    "quantidade_solicitada": quantidade,
-                                    "tipo_erro": type(e).__name__,
-                                },
-                                exc_info=True
-                            )
-                        elif self.logger:
-                            self.logger.error(
-                                f"[{self.PLUGIN_NAME}] {erro_msg}",
-                                exc_info=True,
-                            )
-                        
-                        resultados[par_atual][tf] = {
-                            "status": "erro",
-                            "mensagem": str(e),
-                        }
+                        # Cancela futures pendentes
+                        for f in futures_nao_completados:
+                            f.cancel()
+                
+                # Verificação final: verifica o cache para TODOS os pares do lote, não apenas os que estão em futures_pendentes
+                # Isso garante que pares processados após o cancelamento sejam coletados
+                # Aguarda um pouco para dar tempo para as threads terminarem
+                time.sleep(1.0)  # Aguarda 1s para threads em processamento terminarem
+                
+                cache_pares_verificacao_final = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                pares_lote_verificacao_final = set(pares_este_ciclo)  # Todos os pares do lote atual
+                
+                for par_verificacao in pares_lote_verificacao_final:
+                    # Se o par está no cache mas não está em resultados, adiciona ao resultados
+                    if par_verificacao in cache_pares_verificacao_final and par_verificacao not in resultados:
+                        dados_cache_verificacao = cache_pares_verificacao_final[par_verificacao]
+                        if dados_cache_verificacao:
+                            timeframes_validos_verificacao = {
+                                tf: dados_tf for tf, dados_tf in dados_cache_verificacao.items()
+                                if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                            }
+                            if timeframes_validos_verificacao:
+                                resultados[par_verificacao] = timeframes_validos_verificacao
+                                if self.logger:
+                                    self.logger.info(
+                                        f"[{self.PLUGIN_NAME}] Par {par_verificacao} encontrado no cache na verificação final, "
+                                        f"adicionado ao resultados ({len(timeframes_validos_verificacao)} timeframe(s) válido(s))"
+                                    )
+                
+                # Segunda verificação: se ainda há pares faltando, aguarda mais um pouco e verifica novamente
+                pares_faltando = len(pares_lote_verificacao_final) - len(resultados)
+                if pares_faltando > 0:
+                    time.sleep(1.0)  # Aguarda mais 1s
+                    cache_pares_verificacao_final = self.dados_completos.get("crus", {}) if hasattr(self, 'dados_completos') else {}
+                    
+                    for par_verificacao in pares_lote_verificacao_final:
+                        if par_verificacao in cache_pares_verificacao_final and par_verificacao not in resultados:
+                            dados_cache_verificacao = cache_pares_verificacao_final[par_verificacao]
+                            if dados_cache_verificacao:
+                                timeframes_validos_verificacao = {
+                                    tf: dados_tf for tf, dados_tf in dados_cache_verificacao.items()
+                                    if isinstance(dados_tf, dict) and "velas" in dados_tf and dados_tf.get("velas")
+                                }
+                                if timeframes_validos_verificacao:
+                                    resultados[par_verificacao] = timeframes_validos_verificacao
+                                    if self.logger:
+                                        self.logger.info(
+                                            f"[{self.PLUGIN_NAME}] Par {par_verificacao} encontrado no cache na segunda verificação final, "
+                                            f"adicionado ao resultados ({len(timeframes_validos_verificacao)} timeframe(s) válido(s))"
+                                        )
+                
+                if self.logger:
+                    tempo_total = time.time() - inicio
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] ✓ Lote {lote_atual}/{num_lotes} concluído em {tempo_total:.1f}s: "
+                        f"{futures_completados}/{len(futures)} future(s) completado(s), "
+                        f"{len(resultados)} par(es) com dados válidos"
+                    )
+                    if futures_pendentes:
+                        self.logger.debug(
+                            f"[{self.PLUGIN_NAME}] {len(futures_pendentes)} future(s) pendente(s) "
+                            f"(alguns podem ter sido cancelados ou ainda estão processando)"
+                        )
             
-            # Salva velas no banco de dados (se plugin disponível)
-            if self.plugin_banco_dados:
-                self._salvar_velas_no_banco(resultados)
+            # Atualiza dados completos (preserva dados existentes se resultados estiver vazio)
+            if resultados:
+                # Se há resultados novos, atualiza/sobrescreve
+                if "crus" not in self.dados_completos:
+                    self.dados_completos["crus"] = {}
+                self.dados_completos["crus"].update(resultados)
+            elif self.logger:
+                # Se não há resultados novos, mantém os dados existentes e loga aviso
+                self.logger.warning(
+                    f"[{self.PLUGIN_NAME}] Nenhum resultado obtido neste ciclo. "
+                    f"Mantendo dados existentes: {len(self.dados_completos.get('crus', {}))} par(es) em cache"
+                )
             
-            # Cria JSON com dados das moedas (sem velas)
-            dados_moedas = self._extrair_dados_moedas(resultados)
-            self._salvar_json_moedas(dados_moedas)
-            
-            # Armazena dados
-            self.dados_completos["crus"] = resultados
             self.dados_completos["analisados"] = {
                 "resumo": {
-                    "pares_processados": len(pares_para_buscar),
+                    "pares_processados": len(resultados),
+                    "pares_em_cache": len(self.dados_completos.get("crus", {})),
                     "timeframes_processados": len(timeframes_para_buscar),
                     "total_velas": sum(
                         len(resultados.get(par, {}).get(tf, {}).get("velas", []))
@@ -376,7 +1841,24 @@ class PluginDadosVelas(Plugin):
                 }
             }
             
-            print(f"[DEBUG {self.PLUGIN_NAME}] Execução concluída com sucesso!")
+            # Atualiza JSON com dados das moedas (sem velas)
+            dados_moedas = self._extrair_dados_moedas(resultados)
+            self._salvar_json_moedas(dados_moedas)
+            
+            if self.logger:
+                total_pares_cache = len(self.dados_completos.get("crus", {}))
+                if num_lotes > 1:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] ✓ Execução concluída: "
+                        f"{len(resultados)} par(es) processado(s) neste lote ({lote_atual}/{num_lotes}), "
+                        f"{total_pares_cache} par(es) no cache total"
+                    )
+                else:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] ✓ Execução concluída: "
+                        f"{len(resultados)} par(es) processado(s)"
+                    )
+            
             return {
                 "status": "ok",
                 "dados": resultados,
@@ -385,7 +1867,8 @@ class PluginDadosVelas(Plugin):
             
         except Exception as e:
             erro_msg = f"Erro crítico ao executar: {str(e)}"
-            print(f"[DEBUG {self.PLUGIN_NAME}] ERRO CRÍTICO: {erro_msg}")
+            if self.logger:
+                self.logger.error(f"[{self.PLUGIN_NAME}] ERRO CRÍTICO: {erro_msg}")
             
             # Log específico de erro do bot
             if self.logger and hasattr(self.gerenciador_log, 'log_erro_bot'):

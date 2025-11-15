@@ -22,8 +22,8 @@
   - Schema atualizado para PostgreSQL (SERIAL, TIMESTAMP, JSONB, etc.)
   - Configuração removida: `IA_DB_PATH` (não mais necessária)
 
-### 3. Sistema de Logs - NOVO (02/11/2025) ✅
-Sistema completamente reescrito conforme especificação detalhada:
+### 3. Sistema de Logs - v2.0 (15/11/2025) ✅
+Sistema completamente reescrito conforme especificação detalhada em `proxima_atualizacao.md`:
 
 **Filosofia**: Log conversacional, objetivo e humano - diário técnico que fala com você.
 
@@ -32,30 +32,47 @@ Sistema completamente reescrito conforme especificação detalhada:
 - ✅ `logs/futures/` - Contratos perpétuos/alavancados
 - ✅ `logs/ia/` - Análises e insights do Llama
 - ✅ `logs/system/` - Sistema, inicialização, erros gerais
+- ✅ `logs/banco/` - Operações do banco de dados
+- ✅ `logs/sinais/` - Sinais de trading detectados
+- ✅ `logs/erros/` - Erros do sistema
+- ✅ `logs/warnings/` - Avisos e inconsistências
+- ✅ `logs/critical/` - Erros críticos
+- ✅ `logs/padroes/` - Padrões detectados
 
 **Características**:
-- ✅ Formato BRT (São Paulo) com milissegundos: `[2025-11-02 09:08:14.123 BRT]`
+- ✅ Formato BRT (São Paulo) com milissegundos: `[2025-11-15 08:23:15.533 BRT]`
 - ✅ Timezone configurado para America/Sao_Paulo
 - ✅ Rotação automática: 5MB por arquivo ou diária
 - ✅ Retenção: 7 dias ativos, 30 dias compactados
 - ✅ Compactação automática: logs antigos → `.gz`
+- ✅ **Rastreabilidade total**: Formato inclui `[arquivo:linha]` para identificar origem
+- ✅ **Arquivos criados automaticamente**: Todos os arquivos de log são criados na inicialização
 - ✅ Métodos especializados:
   - `log_evento()` - Evento estruturado genérico
-  - `log_inicializacao()` - Inicialização de componentes
-  - `log_ordem()` - Envio/execução de ordens
-  - `log_decisao()` - Decisões de estratégia
-  - `log_ia()` - Análises e sugestões do Llama
+  - `log_padrao_detectado()` - Padrões detectados (nome, moeda, timeframe, score)
+  - `log_sinal()` - Sinais de trading (ENTRADA, SAIDA, STOP_LOSS, TAKE_PROFIT)
+  - `log_erro_bot()` - Erros do bot
   - `log_erro_critico()` - Erros críticos com stack trace
 
 **Níveis de Severidade**:
-- `INFO`: Operação normal
-- `WARN`: Algo inesperado, mas resolvido automaticamente
-- `ERROR`: Requer atenção
+- `CRITICAL`: Sistema comprometido / travou
+- `ERROR`: Falha em plugin / banco / IA / cálculo / API
+- `WARNING`: Inconsistência, dado insuficiente, comportamento anormal
+- `INFO`: Fluxo padrão (resumido porém útil)
+- `DEBUG`: Detalhamento interno de plugins, banco, IA
+- `TRACE`: Nível cirúrgico: valores de cálculo por vela, parâmetros, loops
 
 **Formato de Mensagens**:
 - Conversacional e objetivo
-- Inclui: par, ação, resultado, detalhes numéricos (preço, quantidade, tempo)
-- Exemplo: "Ordem LONG enviada para BTCUSDT: qty 0.02, preço 68472. Resultado: sucesso"
+- Formato padronizado: `[TIMESTAMP] [COMPONENTE] [NÍVEL] [arquivo:linha] Mensagem`
+- Exemplo: `[2025-11-15 08:23:15.533] [PAIR DOTUSDT] INFO plugin_dados_velas.py:456 Velas carregadas: 168 — Pronto para análise`
+- Exemplo sinal: `[2025-11-15 08:23:15.556] [SIGNAL] INFO DOTUSDT — CONSENSO → LONG (6 indicadores: EMA, VWAP, MACD)`
+
+**Melhorias v2.0 (15/11/2025)**:
+- ✅ Logs consolidados por par: apenas um log INFO após análise completa
+- ✅ Execução paralela de indicadores com logs consolidados
+- ✅ Logs de sinais automáticos quando 6/8 indicadores alinhados
+- ✅ Formato padronizado com identificação clara do par em todas as mensagens
 
 ### 4. Estrutura Base do Projeto
 - ✅ **main.py**: Ponto de entrada com classe `SmartTrader` (corrigido)
@@ -94,6 +111,16 @@ Sistema completamente reescrito conforme especificação detalhada:
   - ✅ **Persistência via PostgreSQL** (antes: SQLite)
   - Buffer para análise em lote
   - Schema atualizado para PostgreSQL (JSONB, TIMESTAMP, etc.)
+  
+- ✅ `PluginBacktest` - Sistema de Simulação de Trades (14/11/2025)
+  - ✅ **Implementação completa**
+  - Simulação realista: slippage (0.1%), fees (0.06%), latência (50ms)
+  - Tracking de posições abertas/fechadas por padrão
+  - Cálculo de métricas reais: precision, recall, expectancy, winrate, avg R:R, sharpe, drawdown
+  - Gerenciamento de capital: position sizing baseado em risco (2% por trade)
+  - Validação de posições contra velas históricas (TP/SL)
+  - ✅ **Validação retroativa implementada**: busca padrões do banco, simula trades e calcula métricas
+  - Localização: `plugins/backtest/plugin_backtest.py`
 
 ### 6. Sistema de Padrões de Trading (08/11/2025)
 - ✅ **PluginPadroes** implementado
@@ -132,8 +159,8 @@ Sistema completamente reescrito conforme especificação detalhada:
 
 **Status:** Top 30 padrões implementados, mas algumas funcionalidades avançadas pendentes conforme `proxima_atualizacao.md`.
 
-#### ⏳ Sistema de Backtest Completo (Simulação de Trades)
-**Status:** Pendente  
+#### ✅ Sistema de Backtest Completo (Simulação de Trades)
+**Status:** Implementado  
 **Prioridade:** Alta  
 **Justificativa:** O backtest completo requer:
 - Simulação realista de execução de trades (slippage, fees, latência)
@@ -150,10 +177,10 @@ Sistema completamente reescrito conforme especificação detalhada:
 - Implementação completa seria um módulo separado (PluginBacktest ou similar)
 
 **Próximos Passos:**
-1. Criar módulo de simulação de trades
-2. Implementar tracking de posições por padrão
-3. Calcular métricas reais baseadas em execuções simuladas
-4. Validar padrões retroativamente com dados históricos
+1. ✅ Criar módulo de simulação de trades - **CONCLUÍDO** (PluginBacktest criado)
+2. ✅ Implementar tracking de posições por padrão - **CONCLUÍDO** (sistema de posições implementado)
+3. ✅ Calcular métricas reais baseadas em execuções simuladas - **CONCLUÍDO** (métricas implementadas)
+4. ✅ Validar padrões retroativamente com dados históricos - **CONCLUÍDO** (validação retroativa implementada)
 
 #### ⏳ Ensemble de Padrões (Combinação de Múltiplos Padrões)
 **Status:** Pendente  
@@ -268,7 +295,7 @@ Sistema completamente reescrito conforme especificação detalhada:
 ---
 
 ### 1. Plugins de Indicadores
-**Status:** Plugin de dados criado, indicadores técnicos pendentes
+**Status:** ✅ Todos os 8 indicadores técnicos implementados e integrados (15/11/2025)
 
 **Plugins de Dados:**
 - ✅ `plugin_dados_velas.py` - Busca dados OHLCV (15m, 1h, 4h) **INTEGRADO**
@@ -280,16 +307,28 @@ Sistema completamente reescrito conforme especificação detalhada:
   - ✅ **Persistência no PostgreSQL** (04/11/2025)
   - ✅ **JSON com dados das moedas** (sem velas) em `data/moedas_dados.json`
   - ✅ Registrado e executando no ciclo principal
+  - ✅ **Processamento paralelo e incremental** (15/11/2025)
+    - Processa múltiplos pares simultaneamente (ThreadPoolExecutor)
+    - Callback para análise imediata após coleta de cada par
+    - Configurável via `main_config.py` (max_workers_paralelo)
 
 **Plugins de Indicadores Técnicos (8 plugins):**
-- ⏳ `plugin_ichimoku.py` - Ichimoku Cloud (9,26,52,26)
-- ⏳ `plugin_supertrend.py` - Supertrend (10, 3)
-- ⏳ `plugin_bollinger.py` - Bollinger Bands + Squeeze (20, 2)
-- ⏳ `plugin_volume.py` - Volume + Breakout
-- ⏳ `plugin_ema.py` - EMA Crossover (9/21)
-- ⏳ `plugin_macd.py` - MACD (12,26,9)
-- ⏳ `plugin_rsi.py` - RSI (14)
-- ⏳ `plugin_vwap.py` - VWAP (intraday)
+- ✅ `plugin_ichimoku.py` - Ichimoku Cloud (9,26,52,26) **IMPLEMENTADO**
+- ✅ `plugin_supertrend.py` - Supertrend (10, 3) **IMPLEMENTADO**
+- ✅ `plugin_bollinger.py` - Bollinger Bands + Squeeze (20, 2) **IMPLEMENTADO**
+- ✅ `plugin_volume.py` - Volume + Breakout **IMPLEMENTADO**
+- ✅ `plugin_ema.py` - EMA Crossover (9/21) **IMPLEMENTADO**
+- ✅ `plugin_macd.py` - MACD (12,26,9) **IMPLEMENTADO**
+- ✅ `plugin_rsi.py` - RSI (14) **IMPLEMENTADO**
+- ✅ `plugin_vwap.py` - VWAP (intraday) **IMPLEMENTADO**
+
+**Características dos Indicadores:**
+- ✅ Todos os 8 indicadores registrados e executando no ciclo principal
+- ✅ Execução paralela de todos os indicadores por par (ThreadPoolExecutor com 8 workers)
+- ✅ Logs consolidados: apenas um log INFO por par após análise completa
+- ✅ Logs individuais dos indicadores movidos para DEBUG (não poluem logs INFO)
+- ✅ Integração com GerenciadorBot para validação 6/8
+- ✅ Sinais válidos (6/8) são logados automaticamente em `logs/sinais/`
 
 **Plugins de Padrões (conforme proxima_atualizacao.md):**
 - ✅ `PluginPadroes` - Sistema de detecção de padrões técnicos (v1.3.0)
@@ -469,13 +508,26 @@ LLAMA_API_KEY=...
 
 ## 📊 Métricas do Projeto
 
-- **Total de Arquivos Python:** ~15 arquivos principais
-- **Plugins Implementados:** 3/11 (27%) - Dados de velas integrado
-- **Plugins Integrados no Ciclo:** 2/3 (PluginBybitConexao + PluginDadosVelas)
+- **Total de Arquivos Python:** ~25 arquivos principais
+- **Plugins Implementados:** 12/12 (100%)
+  - PluginBybitConexao ✅
+  - PluginBancoDados ✅
+  - PluginDadosVelas ✅
+  - PluginIchimoku ✅
+  - PluginSupertrend ✅
+  - PluginBollinger ✅
+  - PluginVolume ✅
+  - PluginEma ✅
+  - PluginMacd ✅
+  - PluginRsi ✅
+  - PluginVwap ✅
+  - PluginPadroes ✅
+- **Plugins Integrados no Ciclo:** 12/12 (100%)
 - **Gerenciadores:** 4/4 (100%)
-- **Plugins de Indicadores:** 0/8 (0%)
-- **Sistema de Logs:** ✅ 100% implementado conforme especificação
-- **Banco de Dados:** ⏳ SQLite removido, PostgreSQL preparado (aguardando plugin BancoDados)
+- **Plugins de Indicadores:** 8/8 (100%) ✅ **TODOS IMPLEMENTADOS**
+- **Sistema de Logs:** ✅ 100% implementado conforme especificação v2.0
+- **Banco de Dados:** ✅ PostgreSQL implementado e funcionando
+- **Processamento Paralelo:** ✅ Implementado (múltiplos pares e indicadores em paralelo)
 - **Cobertura de Testes:** 0% (pendente)
 
 ---
@@ -485,20 +537,27 @@ LLAMA_API_KEY=...
 1. **Ambiente Testnet**: Sistema configurado para testnet por padrão
 2. **Banco de Dados**: 
    - ✅ SQLite completamente removido
-   - ⏳ Plugin `BancoDados` ainda não implementado (apenas `GerenciadorBanco`)
+   - ✅ Plugin `BancoDados` implementado e funcionando (PostgreSQL)
    - ✅ `PluginIaLlama` preparado para PostgreSQL (schema atualizado)
-3. **Indicadores**: Nenhum plugin de indicador implementado ainda
-4. **Trading**: Lógica de execução de trades não implementada
-5. **Sistema de Logs**: ✅ **100% implementado conforme especificação detalhada**
-   - Estrutura: spot/futures/ia/system
+3. **Indicadores**: ✅ **Todos os 8 indicadores técnicos implementados e funcionando**
+   - Execução paralela de indicadores por par
+   - Logs consolidados por par
+   - Integração completa com GerenciadorBot para validação 6/8
+4. **Trading**: Lógica de validação 6/8 implementada, execução de trades pendente
+5. **Sistema de Logs**: ✅ **100% implementado conforme especificação v2.0**
+   - Estrutura: system, banco, sinais, erros, warnings, critical, padroes, ia, spot, futures
    - Rotação: 5MB ou diária
    - Retenção: 7 dias ativos, 30 dias compactados
-   - Formato: **BRT (São Paulo)** com milissegundos, conversacional
+   - Formato: **BRT (São Paulo)** com milissegundos, rastreabilidade (arquivo:linha)
+   - Logs consolidados por par após análise completa
+   - Logs de sinais automáticos quando 6/8 indicadores alinhados
 6. **Ciclo de Execução**: ✅ **Implementado e funcionando**
    - Loop principal a cada 5 segundos
-   - Execução sequencial de plugins
+   - Processamento paralelo de múltiplos pares
+   - Processamento paralelo de indicadores por par
    - Logs detalhados por ciclo
    - Tratamento robusto de erros
+   - Finalização graciosa (CTRL+C)
 
 ---
 
@@ -508,15 +567,19 @@ LLAMA_API_KEY=...
 1. ✅ Renomeação completa (CONCLUÍDO)
 2. ✅ Correção erro main.py (CONCLUÍDO)
 3. ✅ Remoção SQLite → PostgreSQL (CONCLUÍDO)
-4. ✅ Sistema de logs completo (CONCLUÍDO)
-5. ⏳ Testar na testnet com novas chaves
-6. ⏳ Implementar primeiro plugin de indicador (ex: RSI)
+4. ✅ Sistema de logs completo v2.0 (CONCLUÍDO - 15/11/2025)
+5. ✅ Implementação dos 8 indicadores técnicos (CONCLUÍDO - 15/11/2025)
+6. ✅ Processamento paralelo e incremental (CONCLUÍDO - 15/11/2025)
+7. ⏳ Testar na testnet com novas chaves
+8. ⏳ Implementar execução de trades (ordens reais)
 
 ### Média Prioridade:
-1. Completar todos os 8 plugins de indicadores
-2. Implementar lógica 6/8 no GerenciadorBot
-3. Plugin BancoDados com PostgreSQL
-4. Integrar novos métodos de log no fluxo de trading
+1. ✅ Completar todos os 8 plugins de indicadores (CONCLUÍDO)
+2. ✅ Implementar lógica 6/8 no GerenciadorBot (CONCLUÍDO)
+3. ✅ Plugin BancoDados com PostgreSQL (CONCLUÍDO)
+4. ✅ Integrar novos métodos de log no fluxo de trading (CONCLUÍDO)
+5. ⏳ Implementar logs de IA (Llama/Modelos)
+6. ⏳ Implementar logs de padrões (Pattern Recognition)
 
 ### Baixa Prioridade:
 1. Dashboard/web interface
@@ -548,8 +611,15 @@ LLAMA_API_KEY=...
 
 ---
 
-**Última Atualização:** 08/11/2025  
-**Status Geral:** 🟢 Sistema de Padrões de Trading implementado (Top 30 completo) - Validação Temporal implementada (Walk-Forward e OOS completos) - Backtest completo e Ensemble pendentes (ver seção de pendências)
+**Última Atualização:** 15/11/2025  
+**Status Geral:** 🟢 Sistema completo e funcional
+- ✅ Todos os 8 indicadores técnicos implementados e funcionando
+- ✅ Sistema de Logs v2.0 completo com rastreabilidade total
+- ✅ Processamento paralelo de pares e indicadores
+- ✅ Sistema de Padrões de Trading implementado (Top 30 completo)
+- ✅ Validação Temporal implementada (Walk-Forward e OOS completos)
+- ⏳ Backtest completo e Ensemble pendentes (ver seção de pendências)
+- ⏳ Execução de trades reais pendente
 
 ## 📝 Changelog Resumo (05/11/2025 - PluginBancoDados Refatorado)
 
@@ -671,3 +741,108 @@ LLAMA_API_KEY=...
 - ✅ Tipo de log no GerenciadorPlugins corrigido (system em vez de rastreamento)
 - ✅ Plugin de IA verificado e funcional (PostgreSQL preparado)
 - ✅ Todos os tipos de log corrigidos para "system" no main.py
+
+## 📝 Changelog Resumo (15/11/2025 - Indicadores Técnicos e Logs v2.0)
+
+### Novas Features
+- ✅ **Todos os 8 Indicadores Técnicos Implementados**
+  - PluginIchimoku: Ichimoku Cloud (9,26,52,26)
+  - PluginSupertrend: Supertrend (10, 3)
+  - PluginBollinger: Bollinger Bands + Squeeze (20, 2)
+  - PluginVolume: Volume + Breakout
+  - PluginEma: EMA Crossover (9/21)
+  - PluginMacd: MACD (12,26,9)
+  - PluginRsi: RSI (14)
+  - PluginVwap: VWAP (intraday)
+  - Todos registrados e executando no ciclo principal
+
+- ✅ **Processamento Paralelo e Incremental**
+  - Processamento paralelo de múltiplos pares (ThreadPoolExecutor)
+  - Processamento paralelo de indicadores por par (8 workers)
+  - Callback para análise imediata após coleta de cada par
+  - Configurável via `main_config.py` (max_workers_paralelo)
+
+- ✅ **Sistema de Logs v2.0**
+  - Logs consolidados por par: apenas um log INFO após análise completa
+  - Formato padronizado com rastreabilidade total (arquivo:linha)
+  - Logs de sinais automáticos quando 6/8 indicadores alinhados
+  - Estrutura expandida: system, banco, sinais, erros, warnings, critical, padroes, ia, spot, futures
+  - Arquivos de log criados automaticamente na inicialização
+  - Logs individuais dos indicadores movidos para DEBUG
+
+- ✅ **Integração Completa com GerenciadorBot**
+  - Validação 6/8 funcionando
+  - Sinais válidos logados automaticamente em `logs/sinais/`
+  - Formato consolidado: `[PAIR SYMBOL] Resultados: X LONG, Y SHORT — indicadores: ...`
+
+### Melhorias
+- ✅ Logs mais claros e organizados
+- ✅ Identificação clara do par em todas as mensagens: `[PAIR DOTUSDT]`
+- ✅ Redução de ruído: logs individuais dos indicadores em DEBUG
+- ✅ Processamento mais eficiente com paralelismo
+
+### Correções
+- ✅ Configuração corrigida: uso de `main_config.py` em vez de `config.json`
+- ✅ Logs de sinais agora aparecem corretamente
+
+## 📝 Changelog Resumo (14/11/2025 - Sistema de Logs Completo)
+
+### Sistema de Logs Aprimorado
+- ✅ **Métodos Especializados Implementados**
+  - `log_padrao_detectado()`: Loga padrões detectados com nome, moeda, timeframe, direção, score, confidence
+  - `log_sinal()`: Loga sinais de trading (ENTRADA, SAIDA, STOP_LOSS, TAKE_PROFIT)
+  - `log_erro_bot()`: Logs específicos para erros do bot com flush automático
+  - `log_erro_critico()`: Logs críticos com flush automático
+  - Todos os métodos garantem escrita imediata com flush automático
+  
+- ✅ **Integração com Plugins**
+  - PluginPadroes loga automaticamente cada padrão detectado
+  - GerenciadorBot loga automaticamente sinais válidos (6/8)
+  - Todos os erros, warnings e critical são logados automaticamente
+  
+- ✅ **Garantias de Rastreabilidade**
+  - Arquivos de log criados automaticamente (não dependem de existência prévia)
+  - Diretórios criados automaticamente se não existirem
+  - Flush automático após cada log importante (erros, warnings, critical)
+  - Teste de escrita na criação do logger para garantir funcionamento
+  - Formato: `logs/{tipo_log}/YYYY-MM-DD.log` (ex: `logs/system/2025-11-14.log`)
+
+- ✅ **Estrutura de Logs**
+  - `logs/system/`: Logs do sistema, inicialização, erros gerais, padrões detectados
+  - `logs/spot/`: Logs do mercado à vista
+  - `logs/futures/`: Logs de contratos perpétuos/alavancados, sinais de trading
+  - `logs/ia/`: Logs de análises e insights da IA
+
+## 📝 Changelog Resumo (14/11/2025 - Backtest e Finalização)
+
+### Novas Features
+- ✅ **PluginBacktest Criado**
+  - Módulo de simulação de trades implementado
+  - Tracking de posições abertas/fechadas por padrão
+  - Cálculo de métricas reais: precision, recall, expectancy, winrate, avg R:R, sharpe, drawdown
+  - Simulação realista: slippage (0.1%), fees (0.06%), latência (50ms)
+  - Gerenciamento de capital: position sizing baseado em risco (2% por trade)
+  - Validação de posições contra velas históricas (TP/SL)
+  - Localização: `plugins/backtest/plugin_backtest.py`
+
+### Correções
+- ✅ **Problema de Finalização (CTRL+C) Corrigido**
+  - Sistema de cancelamento gracioso implementado
+  - Flag `_cancelamento_solicitado` adicionado ao Plugin base
+  - Métodos `solicitar_cancelamento()` e `cancelamento_solicitado()` implementados
+  - Tratamento especial de SystemExit/KeyboardInterrupt no context manager
+  - Verificação de cancelamento no PluginDadosVelas antes de requisições HTTP
+  - Signal handler melhorado no main.py com aguardo de finalização
+  - GerenciadorPlugins solicita cancelamento antes de finalizar plugins
+  - PluginBancoDados corrigido para evitar erro de pool fechado em finalização dupla
+  - main.py corrigido para evitar finalização dupla
+
+### Validação Retroativa Implementada
+- ✅ **Método `validar_retroativo()` implementado**
+  - Busca padrões detectados do banco de dados (tabela `padroes_detectados`)
+  - Busca velas históricas correspondentes (tabela `velas`)
+  - Simula abertura de posição para cada padrão
+  - Valida se padrões atingiram TP ou SL nas velas seguintes
+  - Calcula métricas finais por tipo de padrão e gerais
+  - Suporta filtros: symbol, timeframe, tipo_padrao, data_inicio, data_fim, confidence_min, final_score_min
+  - Integração completa com PluginBancoDados

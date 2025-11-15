@@ -264,6 +264,7 @@ class Plugin(ABC):
         # Estado interno
         self._inicializado: bool = False
         self._em_execucao: bool = False
+        self._cancelamento_solicitado: bool = False  # Flag para cancelamento gracioso
         self._timestamp_inicio: Optional[datetime] = None
         self._timestamp_execucao: Optional[datetime] = None
         
@@ -318,7 +319,18 @@ class Plugin(ABC):
         try:
             # Inicializa logger se disponível
             if self.gerenciador_log:
-                self.logger = self.gerenciador_log.get_logger(self.PLUGIN_NAME)
+                # Determina tipo de log baseado no tipo de plugin
+                tipo_log = "system"
+                if self.plugin_tipo == TipoPlugin.INDICADOR:
+                    tipo_log = "system"  # Indicadores usam system por padrão
+                elif self.PLUGIN_NAME == "PluginBancoDados":
+                    tipo_log = "banco"
+                elif "Padroes" in self.PLUGIN_NAME:
+                    tipo_log = "padroes"
+                elif "Ia" in self.PLUGIN_NAME or "Llama" in self.PLUGIN_NAME:
+                    tipo_log = "ia"
+                
+                self.logger = self.gerenciador_log.get_logger(self.PLUGIN_NAME, tipo_log)
             
             # Chama inicialização específica do plugin
             resultado = self._inicializar_interno()
@@ -825,6 +837,26 @@ class Plugin(ABC):
                 )
             return False
 
+    def solicitar_cancelamento(self):
+        """
+        Solicita cancelamento gracioso do plugin.
+        
+        Útil quando o sistema está sendo finalizado e queremos que
+        operações em andamento sejam canceladas de forma graciosa.
+        """
+        self._cancelamento_solicitado = True
+        if self.logger:
+            self.logger.debug(f"[{self.PLUGIN_NAME}] Cancelamento solicitado")
+    
+    def cancelamento_solicitado(self) -> bool:
+        """
+        Verifica se cancelamento foi solicitado.
+        
+        Returns:
+            bool: True se cancelamento foi solicitado, False caso contrário
+        """
+        return self._cancelamento_solicitado
+    
     def finalizar(self) -> bool:
         """
         Finaliza o plugin e libera recursos.
@@ -842,6 +874,9 @@ class Plugin(ABC):
         
         """
         try:
+            # Solicita cancelamento antes de finalizar
+            self.solicitar_cancelamento()
+            
             import traceback
             # Log de debug para identificar chamadas indevidas
             if self.logger:
@@ -955,16 +990,26 @@ class Plugin(ABC):
                         exc_info=True,
                     )
 
-        # Se houve exceção durante a execução, loga mas não suprime
+        # Se houve exceção durante a execução, trata de forma especial
         if exc_type is not None:
-            if self.logger:
-                self.logger.error(
-                    f"[{self.PLUGIN_NAME}] Exceção capturada no context manager: "
-                    f"{exc_type.__name__}: {exc_val}",
-                    exc_info=(exc_type, exc_val, exc_tb),
-                )
-            # Retorna False para propagar a exceção original
-            return False
+            # SystemExit e KeyboardInterrupt são exceções normais de finalização
+            # Não devem ser logadas como erro
+            if exc_type in (SystemExit, KeyboardInterrupt):
+                if self.logger:
+                    self.logger.debug(
+                        f"[{self.PLUGIN_NAME}] Finalização solicitada (SystemExit/KeyboardInterrupt)"
+                    )
+                # Suprime SystemExit/KeyboardInterrupt para permitir finalização graciosa
+                return True
+            else:
+                if self.logger:
+                    self.logger.error(
+                        f"[{self.PLUGIN_NAME}] Exceção capturada no context manager: "
+                        f"{exc_type.__name__}: {exc_val}",
+                        exc_info=(exc_type, exc_val, exc_tb),
+                    )
+                # Retorna False para propagar a exceção original
+                return False
 
         return False  # Não suprime exceções por padrão
 

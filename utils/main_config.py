@@ -444,6 +444,14 @@ class ConfigManager:
             "batch_size": 3,
             "executor_max_workers": 4,
             
+            # Processamento paralelo de pares
+            "processamento": {
+                # NOTA: max_workers_paralelo não é mais usado pelo PluginDadosVelas
+                # O número de workers é calculado dinamicamente: max(1, pares // 3)
+                # Mantido aqui apenas para compatibilidade com outros plugins que possam usar
+                "max_workers_paralelo": int(os.getenv("PROCESSAMENTO_MAX_WORKERS", "3")),  # Workers paralelos (não usado pelo PluginDadosVelas)
+            },
+            
             # Configurações de trading
             "trading": {
                 "auto_trade": False,

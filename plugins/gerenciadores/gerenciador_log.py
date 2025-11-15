@@ -11,12 +11,13 @@ Organização:
 - logs/ia/        : Interpretações e sugestões do Llama
 - logs/system/    : Inicialização, conexões, erros gerais
 
-Cada arquivo leva o nome da data: 2025-11-02.log
+Cada arquivo leva o nome: {tipo_log}_2025-11-02.log (ex: system_2025-11-02.log, error_2025-11-02.log)
 Rotação: a cada 5MB ou diária (compactação após 30 dias, retenção de 7 dias ativos).
 """
 
 import logging
 import os
+import inspect
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -24,6 +25,9 @@ from logging.handlers import RotatingFileHandler
 import gzip
 import shutil
 import pytz
+
+# Importa funcionalidades avançadas de log (cores, TRACE)
+from utils.log_helper import SmartFormatter, TRACE_LEVEL
 
 
 class GerenciadorLog:
@@ -66,9 +70,9 @@ class GerenciadorLog:
         # Timezone de São Paulo
         self.timezone_sp = pytz.timezone('America/Sao_Paulo')
         
-        # Formato com timezone de São Paulo e milissegundos
+        # Formato com timezone de São Paulo, milissegundos e informações de rastreamento
         self.formato_padrao = (
-            "[%(asctime)s.%(msecs)03d BRT] [%(name)s] [%(levelname)s] %(message)s"
+            "[%(asctime)s.%(msecs)03d BRT] [%(name)s] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s"
         )
         self.data_format = "%Y-%m-%d %H:%M:%S"
         
@@ -78,6 +82,9 @@ class GerenciadorLog:
         
         # Cria estrutura de diretórios
         self._criar_estrutura_diretorios()
+        
+        # Garante que todos os arquivos de log sejam criados na inicialização
+        self._criar_arquivos_log_iniciais()
         
         # Limpa logs antigos na inicialização
         self._limpar_logs_antigos()
@@ -89,11 +96,34 @@ class GerenciadorLog:
             "futures", 
             "ia",
             "system",
+            "banco",
+            "sinais",
+            "erros",
+            "warnings",
+            "critical",
+            "padroes",
         ]
         
         for diretorio in diretorios:
             caminho = self.base_path / diretorio
             caminho.mkdir(parents=True, exist_ok=True)
+    
+    def _criar_arquivos_log_iniciais(self):
+        """
+        Cria todos os arquivos de log na inicialização para garantir que existam.
+        """
+        tipos_log = ["spot", "futures", "ia", "system", "banco", "sinais", "erros", "warnings", "critical", "padroes"]
+        for tipo_log in tipos_log:
+            try:
+                arquivo_log = self._obter_caminho_arquivo(tipo_log)
+                # Garante que o arquivo existe e tem pelo menos uma linha
+                if arquivo_log.exists() and arquivo_log.stat().st_size == 0:
+                    with open(arquivo_log, 'a', encoding='utf-8') as f:
+                        data_hora = datetime.now(self.timezone_sp).strftime("%Y-%m-%d %H:%M:%S")
+                        f.write(f"[{data_hora} BRT] [GerenciadorLog] [INFO] [gerenciador_log.py:108] Arquivo de log '{tipo_log}' inicializado\n")
+                        f.flush()
+            except Exception:
+                pass  # Ignora erros na criação inicial
 
     def get_logger(
         self,
@@ -119,7 +149,7 @@ class GerenciadorLog:
             logging.Logger: Logger configurado
         """
         # Valida tipo_log
-        tipos_validos = ["spot", "futures", "ia", "system"]
+        tipos_validos = ["spot", "futures", "ia", "system", "banco", "sinais", "erros", "warnings", "critical", "padroes"]
         if tipo_log not in tipos_validos:
             tipo_log = "system"
         
@@ -136,13 +166,18 @@ class GerenciadorLog:
         # Remove handlers existentes (evita duplicação)
         logger.handlers.clear()
         
-        # Handler para arquivo específico por tipo (formato: 2025-11-02.log)
+        # Handler para arquivo específico por tipo (formato: {tipo_log}_2025-11-02.log)
         arquivo_log = self._obter_caminho_arquivo(tipo_log)
+        
+        # Garante que o diretório existe
+        arquivo_log.parent.mkdir(parents=True, exist_ok=True)
+        
         file_handler = RotatingFileHandler(
-            arquivo_log,
+            str(arquivo_log),  # Converte Path para string
             maxBytes=5 * 1024 * 1024,  # 5MB (conforme especificação)
             backupCount=10,  # Mantém últimos 10 arquivos rotacionados
             encoding="utf-8",
+            delay=False,  # Cria arquivo imediatamente
         )
         file_handler.setLevel(nivel)
         
@@ -168,13 +203,15 @@ class GerenciadorLog:
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
         
-        # Handler para console (INFO e acima, formato simplificado)
+        # Handler para console (INFO e acima, formato simplificado com cores)
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
-        console_formatter = SPFormatter(
-            "[%(asctime)s BRT] [%(name)s] [%(levelname)s] %(message)s",
+        # Usa SmartFormatter com cores para console
+        console_formatter = SmartFormatter(
+            "[%(asctime)s BRT] [%(name)s] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
-            timezone_sp=self.timezone_sp
+            timezone_sp=self.timezone_sp,
+            use_colors=True  # Habilita cores no console
         )
         console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
@@ -185,25 +222,53 @@ class GerenciadorLog:
         # Adiciona ao cache
         self.loggers[cache_key] = logger
         
+        # Testa escrita no arquivo para garantir que funciona
+        try:
+            logger.info(f"[{nome}] Logger inicializado para tipo '{tipo_log}' -> {arquivo_log.name}")
+            # Força flush imediato
+            for handler in logger.handlers:
+                if hasattr(handler, 'flush'):
+                    handler.flush()
+        except Exception as e:
+            # Se houver erro, loga no console
+            print(f"[GerenciadorLog] AVISO: Erro ao criar arquivo de log {arquivo_log}: {e}")
+        
         return logger
 
     def _obter_caminho_arquivo(self, tipo_log: str) -> Path:
         """
         Obtém o caminho do arquivo de log para o tipo especificado.
         
-        Formato: logs/{tipo_log}/2025-11-02.log
+        Formato: logs/{tipo_log}/{tipo_log}_2025-11-02.log
         
         Args:
-            tipo_log: Tipo de log (spot, futures, ia, system)
+            tipo_log: Tipo de log (spot, futures, ia, system, banco, sinais, erros, warnings, critical, padroes)
             
         Returns:
             Path: Caminho completo do arquivo de log
         """
         data_atual = datetime.now(self.timezone_sp).strftime("%Y-%m-%d")
-        nome_arquivo = f"{data_atual}.log"
+        nome_arquivo = f"{tipo_log}_{data_atual}.log"
         diretorio = self.base_path / tipo_log
         
-        return diretorio / nome_arquivo
+        # Garante que o diretório existe
+        diretorio.mkdir(parents=True, exist_ok=True)
+        
+        arquivo_log = diretorio / nome_arquivo
+        
+        # Garante que o arquivo existe (cria se não existir) e escreve uma linha inicial
+        if not arquivo_log.exists():
+            arquivo_log.touch()
+            # Escreve linha inicial para garantir que o arquivo seja criado
+            try:
+                with open(arquivo_log, 'a', encoding='utf-8') as f:
+                    data_hora = datetime.now(self.timezone_sp).strftime("%Y-%m-%d %H:%M:%S")
+                    f.write(f"[{data_hora} BRT] [GerenciadorLog] [INFO] [gerenciador_log.py:237] Arquivo de log '{tipo_log}' criado\n")
+                    f.flush()
+            except Exception:
+                pass  # Ignora erro na criação inicial
+        
+        return arquivo_log
 
     def log_evento(
         self,
@@ -243,13 +308,26 @@ class GerenciadorLog:
         
         mensagem_completa = " | ".join(partes)
         
-        # Log conforme nível
+        # Log conforme nível (garante que seja salvo no arquivo)
         if nivel == logging.ERROR:
             logger.error(f"[{tipo_evento}] {mensagem_completa}")
         elif nivel == logging.WARNING:
+            # Warnings também vão para log de warnings
+            logger_warning = self.get_logger(nome_origem, "warnings", nivel=logging.WARNING)
+            logger_warning.warning(f"[{tipo_evento}] {mensagem_completa}")
+            for handler in logger_warning.handlers:
+                if hasattr(handler, 'flush'):
+                    handler.flush()
             logger.warning(f"[{tipo_evento}] {mensagem_completa}")
+        elif nivel == logging.CRITICAL:
+            logger.critical(f"[{tipo_evento}] {mensagem_completa}")
         else:
             logger.info(f"[{tipo_evento}] {mensagem_completa}")
+        
+        # Força flush para garantir que o log seja escrito imediatamente
+        for handler in logger.handlers:
+            if hasattr(handler, 'flush'):
+                handler.flush()
 
     def log_erro_bot(
         self,
@@ -267,7 +345,7 @@ class GerenciadorLog:
             detalhes: Dicionário com informações adicionais (par, timeframe, valores, etc)
             exc_info: Se True, inclui stack trace completo
         """
-        logger = self.get_logger(f"{origem}_ERROR", "system", nivel=logging.ERROR)
+        logger = self.get_logger(f"{origem}_ERROR", "erros", nivel=logging.ERROR)
         
         # Monta mensagem detalhada
         msg_completa = f"[{origem}] ERRO: {mensagem}"
@@ -280,6 +358,11 @@ class GerenciadorLog:
             logger.error(msg_completa, exc_info=True)
         else:
             logger.error(msg_completa)
+        
+        # Força flush para garantir que o erro seja escrito imediatamente
+        for handler in logger.handlers:
+            if hasattr(handler, 'flush'):
+                handler.flush()
     
     def log_erro_critico(
         self, 
@@ -297,7 +380,7 @@ class GerenciadorLog:
             exc_info: Se True, inclui stack trace completo
             detalhes: Dicionário com detalhes adicionais (opcional)
         """
-        logger = self.get_logger("ERROS_SISTEMA", "system", logging.ERROR)
+        logger = self.get_logger("ERROS_SISTEMA", "critical", logging.CRITICAL)
         
         mensagem_completa = mensagem
         if detalhes:
@@ -308,6 +391,11 @@ class GerenciadorLog:
             f"[{plugin_name}] [ERRO_CRITICO] {mensagem_completa}",
             exc_info=exc_info
         )
+        
+        # Força flush para garantir que o log crítico seja escrito imediatamente
+        for handler in logger.handlers:
+            if hasattr(handler, 'flush'):
+                handler.flush()
 
     def log_inicializacao(self, componente: str, sucesso: bool, detalhes: Optional[Dict[str, Any]] = None):
         """
@@ -456,6 +544,99 @@ class GerenciadorLog:
             nivel=logging.INFO,
             par=par
         )
+    
+    def log_padrao_detectado(
+        self,
+        nome_padrao: str,
+        moeda: str,
+        timeframe: str,
+        direcao: str,
+        score: Optional[float] = None,
+        confidence: Optional[float] = None,
+        porcentagem_sucesso: Optional[float] = None,
+        detalhes: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Registra um padrão detectado no log.
+        
+        Args:
+            nome_padrao: Nome do padrão detectado (ex: "Engulfing", "Head and Shoulders")
+            moeda: Símbolo da moeda (ex: "BTCUSDT", "ETHUSDT")
+            timeframe: Timeframe do padrão (ex: "15m", "1h", "4h")
+            direcao: Direção do padrão ("LONG" ou "SHORT")
+            score: Score do padrão (0.0 a 1.0, opcional)
+            confidence: Confidence do padrão (0.0 a 1.0, opcional)
+            porcentagem_sucesso: Porcentagem de sucesso do padrão (futuro, opcional)
+            detalhes: Detalhes adicionais (opcional)
+        """
+        partes = [f"Padrão detectado: {nome_padrao}"]
+        partes.append(f"Moeda: {moeda}")
+        partes.append(f"Timeframe: {timeframe}")
+        partes.append(f"Direção: {direcao}")
+        
+        if score is not None:
+            partes.append(f"Score: {score:.4f}")
+        if confidence is not None:
+            partes.append(f"Confidence: {confidence:.4f}")
+        if porcentagem_sucesso is not None:
+            partes.append(f"Sucesso: {porcentagem_sucesso:.2f}%")
+        
+        mensagem = " | ".join(partes)
+        
+        if detalhes:
+            detalhes_str = ", ".join([f"{k}: {v}" for k, v in detalhes.items()])
+            mensagem += f" | Detalhes: {detalhes_str}"
+        
+        logger = self.get_logger("PluginPadroes", "padroes", nivel=logging.INFO)
+        logger.info(mensagem)
+        for handler in logger.handlers:
+            if hasattr(handler, 'flush'):
+                handler.flush()
+    
+    def log_sinal(
+        self,
+        moeda: str,
+        tipo_sinal: str,
+        direcao: str,
+        timeframe: Optional[str] = None,
+        preco: Optional[float] = None,
+        quantidade: Optional[float] = None,
+        detalhes: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Registra um sinal de trading no log.
+        
+        Args:
+            moeda: Símbolo da moeda (ex: "BTCUSDT", "ETHUSDT")
+            tipo_sinal: Tipo de sinal (ex: "ENTRADA", "SAIDA", "STOP_LOSS", "TAKE_PROFIT")
+            direcao: Direção do sinal ("LONG" ou "SHORT")
+            timeframe: Timeframe do sinal (opcional)
+            preco: Preço do sinal (opcional)
+            quantidade: Quantidade do sinal (opcional)
+            detalhes: Detalhes adicionais (opcional)
+        """
+        partes = [f"Sinal: {tipo_sinal}"]
+        partes.append(f"Moeda: {moeda}")
+        partes.append(f"Direção: {direcao}")
+        
+        if timeframe:
+            partes.append(f"Timeframe: {timeframe}")
+        if preco is not None:
+            partes.append(f"Preço: {preco:.8f}")
+        if quantidade is not None:
+            partes.append(f"Quantidade: {quantidade:.8f}")
+        
+        mensagem = " | ".join(partes)
+        
+        if detalhes:
+            detalhes_str = ", ".join([f"{k}: {v}" for k, v in detalhes.items()])
+            mensagem += f" | Detalhes: {detalhes_str}"
+        
+        logger = self.get_logger("GerenciadorBot", "sinais", nivel=logging.INFO)
+        logger.info(mensagem)
+        for handler in logger.handlers:
+            if hasattr(handler, 'flush'):
+                handler.flush()
 
     def _limpar_logs_antigos(self):
         """
@@ -467,7 +648,7 @@ class GerenciadorLog:
         """
         agora = datetime.now(self.timezone_sp)
         
-        for tipo_log in ["spot", "futures", "ia", "system"]:
+        for tipo_log in ["spot", "futures", "ia", "system", "banco", "sinais", "erros", "warnings", "critical", "padroes"]:
             diretorio = self.base_path / tipo_log
             if not diretorio.exists():
                 continue
@@ -482,10 +663,23 @@ class GerenciadorLog:
                 if ".log." in arquivo.name:  # Backups do RotatingFileHandler
                     continue
                 
-                # Extrai data do nome do arquivo (formato: 2025-11-02.log)
+                # Extrai data do nome do arquivo (formato: {tipo_log}_2025-11-02.log)
                 try:
                     nome_base = arquivo.stem  # Remove .log
-                    data_naive = datetime.strptime(nome_base, "%Y-%m-%d")
+                    # Remove o prefixo do tipo de log (ex: "system_2025-11-02" -> "2025-11-02")
+                    if "_" in nome_base:
+                        # Formato novo: {tipo_log}_YYYY-MM-DD
+                        partes = nome_base.split("_", 1)
+                        if len(partes) == 2 and len(partes[1]) == 10:  # Verifica se tem formato de data
+                            data_str = partes[1]
+                        else:
+                            # Formato antigo: YYYY-MM-DD (compatibilidade)
+                            data_str = nome_base
+                    else:
+                        # Formato antigo: YYYY-MM-DD (compatibilidade)
+                        data_str = nome_base
+                    
+                    data_naive = datetime.strptime(data_str, "%Y-%m-%d")
                     data_arquivo = self.timezone_sp.localize(data_naive)
                     dias_diferenca = (agora - data_arquivo).days
                     

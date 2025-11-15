@@ -657,8 +657,33 @@ class PluginBancoDados(Plugin):
                     )
                 return None
             
+            # Verifica se o pool está fechado
+            if hasattr(self.connection_pool, 'closed') and self.connection_pool.closed:
+                if self.logger:
+                    self.logger.debug(
+                        f"[{self.PLUGIN_NAME}] Pool de conexões está fechado. "
+                        f"Operação de banco cancelada."
+                    )
+                return None
+            
             return self.connection_pool.getconn()
             
+        except psycopg2.pool.PoolError as pool_error:
+            # Pool está fechado ou em estado inválido
+            if "connection pool is closed" in str(pool_error).lower():
+                if self.logger:
+                    self.logger.debug(
+                        f"[{self.PLUGIN_NAME}] Pool de conexões está fechado. "
+                        f"Operação de banco cancelada."
+                    )
+                return None
+            # Re-lança outros erros de pool
+            if self.logger:
+                self.logger.error(
+                    f"[{self.PLUGIN_NAME}] Erro no pool de conexões: {pool_error}",
+                    exc_info=True,
+                )
+            return None
         except Exception as e:
             if self.logger:
                 self.logger.error(
@@ -1987,11 +2012,29 @@ class PluginBancoDados(Plugin):
         """
         try:
             if self.connection_pool:
-                self.connection_pool.closeall()
-                if self.logger:
-                    self.logger.info(
-                        f"[{self.PLUGIN_NAME}] Pool de conexões fechado"
-                    )
+                try:
+                    # Verifica se o pool já está fechado
+                    if hasattr(self.connection_pool, 'closed') and self.connection_pool.closed:
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] Pool de conexões já estava fechado"
+                            )
+                        return True
+                    
+                    self.connection_pool.closeall()
+                    if self.logger:
+                        self.logger.info(
+                            f"[{self.PLUGIN_NAME}] Pool de conexões fechado"
+                        )
+                except Exception as pool_error:
+                    # Pool já pode estar fechado (erro comum em finalização dupla)
+                    if "connection pool is closed" in str(pool_error).lower():
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] Pool já estava fechado (finalização dupla)"
+                            )
+                        return True
+                    raise
             
             return True
             

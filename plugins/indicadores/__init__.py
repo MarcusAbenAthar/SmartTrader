@@ -16,6 +16,24 @@ E plugins de dados e validação:
 """
 
 from plugins.indicadores.plugin_dados_velas import PluginDadosVelas
+from plugins.indicadores.plugin_ichimoku import PluginIchimoku
+from plugins.indicadores.plugin_supertrend import PluginSupertrend
+from plugins.indicadores.plugin_bollinger import PluginBollinger
+from plugins.indicadores.plugin_volume import PluginVolume
+from plugins.indicadores.plugin_ema import PluginEma
+from plugins.indicadores.plugin_macd import PluginMacd
+from plugins.indicadores.plugin_rsi import PluginRsi
+from plugins.indicadores.plugin_vwap import PluginVwap
 
-__all__ = ["PluginDadosVelas"]
+__all__ = [
+    "PluginDadosVelas",
+    "PluginIchimoku",
+    "PluginSupertrend",
+    "PluginBollinger",
+    "PluginVolume",
+    "PluginEma",
+    "PluginMacd",
+    "PluginRsi",
+    "PluginVwap",
+]
 

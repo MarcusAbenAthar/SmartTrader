@@ -205,13 +205,19 @@ class GerenciadorPlugins(GerenciadorBase):
                         continue
                     
                     if self.logger:
-                        self.logger.debug(
-                            f"[{self.GERENCIADOR_NAME}] Executando plugin '{nome_plugin}'"
+                        self.logger.info(
+                            f"[{self.GERENCIADOR_NAME}] ▶ Executando plugin '{nome_plugin}'"
                         )
 
                     # Executa plugin (executar() já tem @execucao_segura quando aplicável)
                     resultado = plugin.executar(dados_atuais)
                     resultados[nome_plugin] = resultado
+                    
+                    if self.logger:
+                        status_resultado = resultado.get("status", "unknown") if isinstance(resultado, dict) else "unknown"
+                        self.logger.info(
+                            f"[{self.GERENCIADOR_NAME}] ✓ Plugin '{nome_plugin}' executado com status: {status_resultado}"
+                        )
                     
                     # Verifica status
                     if resultado and isinstance(resultado, dict):
@@ -293,6 +299,22 @@ class GerenciadorPlugins(GerenciadorBase):
             bool: True se finalizado com sucesso, False caso contrário.
         """
         try:
+            # Primeiro, solicita cancelamento em todos os plugins
+            for nome_plugin in self.ordem_execucao:
+                if nome_plugin in self.plugins:
+                    try:
+                        self.plugins[nome_plugin].solicitar_cancelamento()
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(
+                                f"[{self.GERENCIADOR_NAME}] Erro ao solicitar cancelamento "
+                                f"em plugin '{nome_plugin}': {e}"
+                            )
+            
+            # Aguarda um pouco para requisições em andamento terminarem
+            import time
+            time.sleep(0.3)
+            
             # Finaliza plugins na ordem reversa
             for nome_plugin in reversed(self.ordem_execucao):
                 if nome_plugin in self.plugins:

@@ -65,7 +65,7 @@ class GerenciadorBot(GerenciadorBase):
         try:
             if self.gerenciador_log:
                 self.logger = self.gerenciador_log.get_logger(
-                    self.GERENCIADOR_NAME, "bot"
+                    self.GERENCIADOR_NAME, "system"
                 )
             
             if self.logger:
@@ -83,12 +83,13 @@ class GerenciadorBot(GerenciadorBase):
                 )
             return False
 
-    def validar_entrada(self, resultados_indicadores: Dict[str, Any]) -> Dict[str, Any]:
+    def validar_entrada(self, resultados_indicadores: Dict[str, Any], par: Optional[str] = None) -> Dict[str, Any]:
         """
         Valida condições de entrada baseado na contagem 6/8.
         
         Args:
-            resultados_indicadores: Resultados dos 8 indicadores
+            resultados_indicadores: Resultados dos 8 indicadores (pode ser dict de plugins ou dict de indicadores)
+            par: Nome do par sendo validado (opcional, para logs)
             
         Returns:
             dict: {
@@ -106,6 +107,7 @@ class GerenciadorBot(GerenciadorBase):
             long_count = 0
             short_count = 0
             detalhes = {}
+            indicadores_com_sinal = []
 
             # Mapeamento dos 8 indicadores
             indicadores = [
@@ -118,20 +120,56 @@ class GerenciadorBot(GerenciadorBase):
                 "rsi",
                 "vwap",
             ]
+            
+            # Mapeamento de nomes de plugins para indicadores
+            plugin_to_indicator = {
+                "PluginIchimoku": "ichimoku",
+                "PluginSupertrend": "supertrend",
+                "PluginBollinger": "bollinger",
+                "PluginVolume": "volume",
+                "PluginEma": "ema",
+                "PluginMacd": "macd",
+                "PluginRsi": "rsi",
+                "PluginVwap": "vwap",
+            }
 
-            for indicador in indicadores:
-                resultado = resultados_indicadores.get(indicador, {})
-                
-                if isinstance(resultado, dict):
+            # Processa resultados (pode vir como dict de plugins ou dict de indicadores)
+            for key, value in resultados_indicadores.items():
+                # Se for um plugin, extrai os dados
+                if isinstance(value, dict) and "dados" in value:
+                    # É resultado de plugin
+                    dados_plugin = value.get("dados", {})
+                    indicador_nome = plugin_to_indicator.get(key, key.lower().replace("plugin", ""))
+                    
+                    # Procura sinais no par específico
+                    if par and par in dados_plugin:
+                        par_data = dados_plugin[par]
+                        # Conta sinais por timeframe
+                        for tf, tf_data in par_data.items():
+                            if isinstance(tf_data, dict):
+                                if tf_data.get("long", False):
+                                    long_count += 1
+                                    if indicador_nome not in indicadores_com_sinal:
+                                        indicadores_com_sinal.append(indicador_nome.upper())
+                                if tf_data.get("short", False):
+                                    short_count += 1
+                                    if indicador_nome not in indicadores_com_sinal:
+                                        indicadores_com_sinal.append(indicador_nome.upper())
+                else:
+                    # É resultado direto de indicador
+                    resultado = value if isinstance(value, dict) else {}
                     sinal_long = resultado.get("long", False)
                     sinal_short = resultado.get("short", False)
                     
                     if sinal_long:
                         long_count += 1
+                        indicadores_com_sinal.append(key.upper())
                     if sinal_short:
                         short_count += 1
+                        if key.upper() not in indicadores_com_sinal:
+                            indicadores_com_sinal.append(key.upper())
                     
-                    detalhes[indicador] = {
+                    detalhes[key] = {
                         "long": sinal_long,
                         "short": sinal_short,
                     }
@@ -141,10 +179,6 @@ class GerenciadorBot(GerenciadorBase):
             neutros = total_indicadores - long_count - short_count
             
             # Validação 6/8 com tratamento de empates
-            # Comportamento em caso de empate (ex: 5/8 ou 6/8 com um neutro):
-            # - 6/8 ou mais: Válido, direção definida
-            # - 5/8 com neutro: Considera empate, precisa de pelo menos 6/8
-            # - Empate exato (4L/4S): Inválido, reduz oscilações falsas
             valido = False
             direcao = None
             motivo = None
@@ -157,6 +191,32 @@ class GerenciadorBot(GerenciadorBase):
                 valido = True
                 direcao = "SHORT"
                 motivo = f"{short_count}/8 indicadores SHORT"
+            
+            # Loga sinal se válido
+            if valido and self.gerenciador_log and par:
+                try:
+                    self.gerenciador_log.log_sinal(
+                        moeda=par,
+                        tipo_sinal="ENTRADA",
+                        direcao=direcao,
+                        detalhes={
+                            "contagem": long_count if direcao == "LONG" else short_count,
+                            "motivo": motivo,
+                            "indicadores": indicadores_com_sinal
+                        }
+                    )
+                    
+                    # Log INFO adicional no formato do padrão
+                    if self.logger:
+                        self.logger.info(
+                            f"[SIGNAL] {par} — CONSENSO → {direcao} ({long_count if direcao == 'LONG' else short_count} indicadores: {', '.join(indicadores_com_sinal)})"
+                        )
+                except Exception as log_error:
+                    # Não interrompe o processo se houver erro no log
+                    if self.logger:
+                        self.logger.warning(
+                            f"[{self.GERENCIADOR_NAME}] Erro ao logar sinal: {log_error}"
+                        )
             elif long_count == 5 and short_count == 0 and neutros >= 3:
                 # 5/8 com neutros: aguarda confirmação (6/8 necessário)
                 valido = False

@@ -2531,6 +2531,30 @@ class PluginPadroes(Plugin):
             if self.gerenciador_banco:
                 self.persistir_dados("padroes_detectados", dados_inserir)
             
+            # Loga cada padrão detectado
+            if self.gerenciador_log:
+                for padrao in padroes:
+                    try:
+                        self.gerenciador_log.log_padrao_detectado(
+                            nome_padrao=padrao.get("tipo_padrao", "Unknown"),
+                            moeda=padrao.get("symbol", "Unknown"),
+                            timeframe=padrao.get("timeframe", "Unknown"),
+                            direcao=padrao.get("direcao", "Unknown"),
+                            score=float(padrao.get("score", 0.0)) if padrao.get("score") else None,
+                            confidence=float(padrao.get("confidence", 0.0)) if padrao.get("confidence") else None,
+                            porcentagem_sucesso=None,  # Será calculado futuramente
+                            detalhes={
+                                "regime": padrao.get("regime"),
+                                "final_score": float(padrao.get("final_score", 0.0)) if padrao.get("final_score") else None,
+                            }
+                        )
+                    except Exception as log_error:
+                        # Não interrompe o processo se houver erro no log
+                        if self.logger:
+                            self.logger.warning(
+                                f"[{self.PLUGIN_NAME}] Erro ao logar padrão: {log_error}"
+                            )
+            
         except Exception as e:
             if self.logger:
                 self.logger.error(

@@ -1,8 +1,8 @@
 # Plano de Desenvolvimento de Padrões de Trading (Top 30) — **Versão Final com Robustez**
 
-**Última Atualização:** 08/11/2025  
-**Versão:** v1.3.0  
-**Status:** Top 10 implementado | Validação Temporal implementada | Backtest completo pendente
+**Última Atualização:** 15/11/2025  
+**Versão:** v1.4.0  
+**Status:** Top 30 implementado | Validação Temporal implementada | 8 Indicadores Técnicos implementados | Sistema de Logs v2.0 completo | Backtest completo pendente
 
 ---
 
@@ -14,10 +14,13 @@
 | Filtro de Regime | ✅ Completo | v1.3.0 | Trending vs Range implementado |
 | Confidence Decay | ✅ Completo | v1.3.0 | Fórmula implementada, quarentena automática |
 | Validação Temporal | ✅ Parcial | v1.3.0 | Walk-Forward e OOS completos, Rolling Window básico |
-| Backtest Engine | ⏳ Pendente | - | Simulação de trades para métricas reais |
+| Backtest Engine | ✅ Completo | v1.4.0 | PluginBacktest implementado com simulação de trades |
 | Ensemble/Score | ✅ Parcial | v1.3.0 | Score final implementado, ensemble pendente |
 | Telemetria | ✅ Completo | v1.3.0 | Todos os campos obrigatórios implementados |
 | Próximos 20 Padrões | ✅ Completo | v1.3.0 | Todos os 20 padrões implementados |
+| 8 Indicadores Técnicos | ✅ Completo | v1.4.0 | Todos os 8 indicadores implementados e funcionando |
+| Sistema de Logs v2.0 | ✅ Completo | v1.4.0 | Logs consolidados, rastreabilidade total, processamento paralelo |
+| Processamento Paralelo | ✅ Completo | v1.4.0 | Múltiplos pares e indicadores em paralelo |
 
 ---
 
@@ -184,3 +187,373 @@ confidence_score = base_score * exp(-0.01 * days_since_last_win)
 - [x] Score final > 0.7 para execução *(v1.3.0 - Implementado: final_score = technical_score * 0.6 + confidence * 0.4)*  
 
 ---
+
+
+---
+
+### Plano de melhoria dos logs
+
+Nesse plano, temos:
+
+* Clareza
+* Rastreabilidade total
+* Escalabilidade
+* Organização por camadas (sem ruído desnecessário)
+* Cobertura **de todos os módulos do SmartTrader**
+
+  * Indicadores
+  * Sinais
+  * Banco de dados
+  * IA
+  * Padrões
+  * Ciclo completo do sistema
+
+
+**O PADRÃO OFICIAL DE LOGS DO SMARTTRADER — Versão 2.0**:
+
+---
+
+# 🔥 **PADRÃO DE LOGS DO SMARTTRADER (versão final aprovada)**
+
+## 🧱 **NÍVEIS DE LOG**
+
+teremos **5 níveis**, todos obrigatórios:
+
+1. **CRITICAL** → Sistema comprometido / travou
+2. **ERROR** → Falha em plugin / banco / IA / cálculo / API
+3. **WARNING** → Inconsistência, dado insuficiente, comportamento anormal
+4. **INFO** → Fluxo padrão (resumido porém útil)
+5. **DEBUG** → Detalhamento interno de plugins, banco, IA
+6. **TRACE** → Nível cirúrgico: valores de cálculo por vela, parâmetros, loops
+
+---
+
+# 🔥 **1. LOGS DO CICLO PRINCIPAL**
+
+### **INFO — Sempre**
+
+```
+[SYSTEM] Ciclo iniciado — pares: 12, plugins: 8
+```
+
+### **INFO — Final**
+
+```
+[SYSTEM] Ciclo concluído — total sinais: 27 LONG, 14 SHORT — tempo: 311 ms
+```
+
+### **DEBUG — Tempo por plugin**
+
+```
+[SYSTEM] Tempo de execução — EMA: 23 ms, MACD: 19 ms, VWAP: 41 ms...
+```
+
+### **ERROR — Crash do ciclo**
+
+```
+[SYSTEM] ERROR — ciclo interrompido por exceção: <detalhe>
+```
+
+---
+
+# 🔥 **2. LOGS POR PAR (pair-level)**
+
+### **INFO — Resumo de entrada**
+
+```
+[PAIR DOTUSDT] Velas carregadas: 168 — Pronto para análise
+```
+
+### **INFO — Resumo final do par**
+
+```
+[PAIR DOTUSDT] Resultados: 5 LONG, 3 SHORT — indicadores: EMA, MACD, VWAP
+```
+
+### **WARNING — Dados insuficientes**
+
+```
+[PAIR ETHUSDT] WARNING — Apenas 21 velas disponíveis, alguns indicadores ignorados
+```
+
+### **ERROR — Não conseguiu processar o par**
+
+```
+[PAIR XRPUSDT] ERROR — Falha no processamento: KeyError 'close'
+```
+
+---
+
+# 🔥 **3. LOGS DE INDICADORES**
+
+Formato padronizado:
+
+### **INFO — Início**
+
+```
+[DOTUSDT | EMA] ▶ Iniciando indicador EMA
+```
+
+### **INFO — Resultado resumido**
+
+```
+[DOTUSDT | EMA] ✓ Finalizado — LONG: 1, SHORT: 2
+```
+
+### **DEBUG — Detalhes técnicos**
+
+```
+[DOTUSDT | EMA] DEBUG — EMA(20)=7.117, EMA(50)=7.103 — cruzamento detectado
+```
+
+### **TRACE — Cálculo profundo**
+
+```
+[DOTUSDT | EMA] TRACE — vela 154: close=6.12, ema_fast=6.05, ema_slow=6.33
+```
+
+### **WARNING — Indicador não pode ser calculado**
+
+```
+[DOTUSDT | RSI] WARNING — Velas insuficientes (precisa de 14)
+```
+
+### **ERROR — Falha séria no indicador**
+
+```
+[DOTUSDT | VWAP] ERROR — divisão por zero (volume=0)
+```
+
+---
+
+# 🔥 **4. LOGS DE SINAIS (Sistema de Sinais)**
+
+O que importa:
+**quem deu o sinal, qual par, qual direção e por quê**.
+
+### **INFO — Sinal emitido (consolidado)**
+
+```
+[SIGNAL] DOTUSDT — SUPER TREND → LONG (rompimento confirmado)
+```
+
+### **INFO — Sinal composto (IA + indicadores)**
+
+```
+[SIGNAL] DOTUSDT — CONSENSO → LONG (6 indicadores + IA)
+```
+
+### **DEBUG — Detalhamento da decisão**
+
+```
+[SIGNAL] DOTUSDT DEBUG — Score: 0.78 — Indicadores: EMA=LONG, VWAP=LONG, MACD=SHORT
+```
+
+### **TRACE — Justificativa numérica**
+
+```
+[SIGNAL] DOTUSDT TRACE — ema_cross=true, supertrend_dir=+1, vol_surge=12.5%
+```
+
+---
+
+# 🔥 **5. LOGS DO BANCO DE DADOS**
+
+Obrigatório. Banco falhou → sistema morre.
+
+### **INFO — Operações principais**
+
+```
+[DB] Inserção concluída — tabela: candles — linhas: 168 — par: DOTUSDT
+```
+
+### **DEBUG — Queries**
+
+```
+[DB] DEBUG — SELECT * FROM sinais WHERE par='DOTUSDT' ORDER BY ts DESC
+```
+
+### **TRACE — Transporte de dados**
+
+```
+[DB] TRACE — bulk insert 168 velas — chunk_size=64
+```
+
+### **WARNING — Latência / retry**
+
+```
+[DB] WARNING — Conexão lenta, retry 1/3
+```
+
+### **ERROR — Falha grave**
+
+```
+[DB] ERROR — IntegrityError: duplicate key 'DOTUSDT-1h-2025-11-15'
+```
+
+### **CRITICAL — Banco desconectado**
+
+```
+[DB] CRITICAL — Perda de conexão com PostgreSQL — abortando ciclo
+```
+
+---
+
+# 🔥 **6. LOGS DO MÓDULO DE IA (Llama/Modelos)**
+
+### **INFO — Inferência**
+
+```
+[AI] Solicitando análise de padrões — par: DOTUSDT — velas: 168
+```
+
+### **INFO — Resposta consolidada**
+
+```
+[AI] Padrões detectados — DOTUSDT — 3 divergências, 1 topo duplo
+```
+
+### **DEBUG — Payload da IA**
+
+```
+[AI] DEBUG — Prompt enviado ao modelo: <200 caracteres>
+```
+
+### **TRACE — Resposta completa**
+
+```
+[AI] TRACE — JSON bruto recebido do modelo:
+{...}
+```
+
+### **WARNING — Modelo retornou pouco confiável**
+
+```
+[AI] WARNING — Confiabilidade baixa (score 0.42) — descartado
+```
+
+### **ERROR — Falha na IA**
+
+```
+[AI] ERROR — Timeout na consulta ao modelo Llama
+```
+
+---
+
+# 🔥 **7. LOGS DO MÓDULO DE PADRÕES (pattern recognition)**
+
+Padrões como:
+
+* rompimentos
+* triângulos
+* divergências
+* candle patterns
+* tendências
+* ranges
+* setups próprios
+
+### **INFO — Resumo de padrões**
+
+```
+[PATTERN] DOTUSDT — rompimento de resistência — força 0.83
+```
+
+### **DEBUG — Detalhamento**
+
+```
+[PATTERN] DEBUG — HH confirmado — últimas 5 velas: 6.12, 6.19, 6.22...
+```
+
+### **TRACE — Cálculos internos**
+
+```
+[PATTERN] TRACE — candle 152→153: high_break=true — diff=0.74%
+```
+
+### **WARNING — Padrão fraco**
+
+```
+[PATTERN] WARNING — falso rompimento detectado (wick longo)
+```
+
+---
+
+# 🔥 FORMATO FINAL DAS LINHAS
+
+Todas seguem a estrutura:
+
+```
+[TIMESTAMP] [COMPONENTE] [NÍVEL] [localização opcional] Mensagem
+```
+
+Exemplo real unificado:
+
+```
+[2025-11-15 08:23:15.533] [DOTUSDT | EMA] INFO plugin_ema.py:178 ✓ Execução concluída: LONG=1 SHORT=2
+[2025-11-15 08:23:15.556] [SIGNAL] INFO DOTUSDT — EMA → LONG (cruzamento confirmado)
+[2025-11-15 08:23:15.567] [DB] INFO Inserção concluída — candles — 168 linhas
+[2025-11-15 08:23:15.578] [AI] INFO Padrões detectados — 2 divergências
+```
+
+---
+
+## 📋 **Status de Implementação do Sistema de Logs (v2.0)**
+
+**Última Atualização:** 15/11/2025
+
+### ✅ Implementado
+
+1. **Logs do Ciclo Principal**
+   - ✅ Log INFO no início do ciclo (pares, plugins)
+   - ✅ Log INFO no final do ciclo (sinais, tempo)
+   - ✅ Log DEBUG com tempo por plugin
+   - ✅ Log ERROR em caso de crash
+
+2. **Logs por Par (Pair-level)**
+   - ✅ Log INFO quando velas são carregadas: `[PAIR DOTUSDT] Velas carregadas: 168 — Pronto para análise`
+   - ✅ Log INFO consolidado após análise: `[PAIR DOTUSDT] Resultados: 5 LONG, 3 SHORT — indicadores: EMA, MACD, VWAP`
+   - ✅ Log WARNING para dados insuficientes
+   - ✅ Log ERROR para falhas no processamento
+
+3. **Logs de Indicadores**
+   - ✅ Logs DEBUG para início e fim de execução (não mais INFO individual)
+   - ✅ Logs consolidados em um único INFO por par após todos os indicadores executarem em paralelo
+   - ✅ Execução paralela de todos os indicadores por par
+   - ✅ Logs TRACE disponíveis para cálculos detalhados
+
+4. **Logs de Sinais**
+   - ✅ Log INFO quando sinal válido é detectado: `[SIGNAL] DOTUSDT — CONSENSO → LONG (6 indicadores: EMA, VWAP, MACD)`
+   - ✅ Logs em arquivo dedicado (`logs/sinais/`)
+   - ✅ Detalhes completos do sinal (par, direção, indicadores, contagem)
+
+5. **Logs do Banco de Dados**
+   - ✅ Logs INFO para operações principais
+   - ✅ Logs em arquivo dedicado (`logs/banco/`)
+   - ✅ Formato: `[DB] Inserção concluída — tabela: candles — linhas: 168 — par: DOTUSDT`
+
+6. **Estrutura de Logs**
+   - ✅ Categorias: system, banco, sinais, erros, warnings, critical, padroes, ia, spot, futures
+   - ✅ Arquivos separados por categoria
+   - ✅ Formato padronizado com timestamp BRT, componente, nível, arquivo:linha
+
+### ⏳ Pendente / Parcial
+
+1. **Logs de IA (Llama/Modelos)**
+   - ⏳ Logs INFO para inferência e resposta consolidada
+   - ⏳ Logs DEBUG para payload
+   - ⏳ Logs TRACE para resposta completa
+   - ⏳ Logs WARNING para confiabilidade baixa
+
+2. **Logs de Padrões (Pattern Recognition)**
+   - ⏳ Logs INFO para resumo de padrões detectados
+   - ⏳ Logs DEBUG para detalhamento
+   - ⏳ Logs TRACE para cálculos internos
+   - ⏳ Logs WARNING para padrões fracos
+
+3. **Melhorias Adicionais**
+   - ⏳ Logs de tempo de execução por plugin (DEBUG)
+   - ⏳ Logs de ciclo completo com métricas consolidadas
+   - ⏳ Logs de performance do sistema
+
+---
+

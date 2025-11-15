@@ -32,39 +32,58 @@ Smart_Trader/
 │   │
 │   ├── indicadores/        # Plugins de indicadores técnicos
 │   │   ├── __init__.py
-│   │   ├── plugin_ichimoku.py
-│   │   ├── plugin_supertrend.py
-│   │   ├── plugin_bollinger.py
-│   │   ├── plugin_volume.py
-│   │   ├── plugin_ema.py
-│   │   ├── plugin_macd.py
-│   │   ├── plugin_rsi.py
-│   │   └── plugin_vwap.py
+│   │   ├── plugin_dados_velas.py  # Coleta de dados OHLCV
+│   │   ├── plugin_ichimoku.py     # ✅ Ichimoku Cloud
+│   │   ├── plugin_supertrend.py   # ✅ Supertrend
+│   │   ├── plugin_bollinger.py    # ✅ Bollinger Bands + Squeeze
+│   │   ├── plugin_volume.py       # ✅ Volume + Breakout
+│   │   ├── plugin_ema.py          # ✅ EMA Crossover
+│   │   ├── plugin_macd.py         # ✅ MACD
+│   │   ├── plugin_rsi.py          # ✅ RSI
+│   │   └── plugin_vwap.py         # ✅ VWAP
+│   │
+│   ├── conexoes/           # Plugins de conexão
+│   │   ├── __init__.py
+│   │   └── plugin_bybit_conexao.py  # Conexão com API Bybit
 │   │
 │   ├── padroes/            # Plugins de padrões de trading
 │   │   ├── __init__.py
-│   │   └── plugin_padroes.py  # Sistema de detecção de padrões (Top 10)
+│   │   └── plugin_padroes.py  # Sistema de detecção de padrões (Top 30)
+│   │
+│   ├── backtest/           # Plugins de backtest
+│   │   ├── __init__.py
+│   │   └── plugin_backtest.py  # Simulação de trades
+│   │
+│   ├── ia/                 # Plugins de IA
+│   │   ├── __init__.py
+│   │   └── plugin_ia_llama.py  # Inteligência Artificial (Llama)
+│   │
+│   ├── plugin_banco_dados.py  # Plugin de banco de dados PostgreSQL
 │   │
 │   └── gerenciadores/      # Gerenciadores principais
 │       ├── __init__.py
 │       ├── gerenciador.py           # Classe base
-│       ├── gerenciador_log.py       # Sistema de logs
+│       ├── gerenciador_log.py       # Sistema de logs v2.0
 │       ├── gerenciador_banco.py     # Persistência de dados
 │       ├── gerenciador_plugins.py   # Orquestração de plugins
-│       └── gerenciador_bot.py       # Controle de trades
+│       └── gerenciador_bot.py       # Controle de trades (Sistema 6/8)
 │
 ├── utils/
 │   ├── __init__.py
-│   ├── config.py           # Configuração centralizada
+│   ├── main_config.py      # Configuração centralizada (main_config.py)
 │   └── logging_config.py   # Helpers de logging
 │
-└── logs/                   # Logs organizados por tipo
-    ├── bot/
-    ├── banco/
-    ├── dados/
-    ├── sinais/
-    ├── erros/
-    └── rastreamento/
+└── logs/                   # Logs organizados por tipo (v2.0)
+    ├── system/             # Sistema, inicialização, erros gerais
+    ├── banco/              # Operações do banco de dados
+    ├── sinais/             # Sinais de trading detectados
+    ├── erros/              # Erros do sistema
+    ├── warnings/           # Avisos e inconsistências
+    ├── critical/           # Erros críticos
+    ├── padroes/            # Padrões detectados
+    ├── ia/                 # Análises e insights da IA
+    ├── spot/               # Mercado à vista
+    └── futures/            # Contratos perpétuos/alavancados
 ```
 
 ## 🚀 Instalação
@@ -147,7 +166,7 @@ Qualquer um dos seguintes eventos fecha a posição imediatamente:
 
 ## 🔧 Configuração de Pares
 
-Configurações padrão por par (em `utils/config.py`):
+Configurações padrão por par (em `utils/main_config.py`):
 
 | Par       | Timeframe | Alavancagem | Risco |
 |-----------|-----------|-------------|-------|
@@ -179,24 +198,40 @@ Todos os plugins seguem o padrão:
 
 O sistema implementa detecção de padrões técnicos conforme `proxima_atualizacao.md`:
 
-**Top 10 Padrões Implementados:**
-1. Breakout de suporte/resistência com volume confirmado
-2. Pullback válido após breakout
-3. EMA crossover (9/21) com confirmação de volume
-4. RSI divergence (price × RSI)
-5. Bollinger Squeeze + rompimento
-6. VWAP rejection / acceptance
-7. Candlestick Engulfing
-8. Hammer / Hanging Man
-9. Volume spike anomaly
-10. False breakout
+**Top 30 Padrões Implementados:**
+- ✅ Top 10 padrões principais
+- ✅ Próximos 20 padrões adicionais
+- ⚠️ Harmonic patterns (#27) - Estrutura básica (requer refinamento)
+- ⚠️ Multi-timeframe confirmation (#29) - Estrutura básica (requer dados multi-TF)
 
 **Características:**
 - Filtro de Regime de Mercado (Trending vs Range)
 - Confidence Decay (decaimento de confiança)
 - Score final: `(technical_score * 0.6) + (confidence * 0.4)`
 - Persistência automática no banco de dados
-- Pronto para validação temporal e backtest
+- Validação Temporal implementada (Walk-Forward e OOS completos)
+- ⏳ Backtest completo e Ensemble pendentes
+
+### Sistema de Logs (v2.0)
+
+**Estrutura de Logs:**
+- `logs/system/` - Sistema, inicialização, erros gerais
+- `logs/banco/` - Operações do banco de dados
+- `logs/sinais/` - Sinais de trading detectados
+- `logs/erros/` - Erros do sistema
+- `logs/warnings/` - Avisos e inconsistências
+- `logs/critical/` - Erros críticos
+- `logs/padroes/` - Padrões detectados
+- `logs/ia/` - Análises e insights da IA
+- `logs/spot/` - Mercado à vista
+- `logs/futures/` - Contratos perpétuos/alavancados
+
+**Características:**
+- Formato BRT (São Paulo) com milissegundos
+- Rastreabilidade total: `[arquivo:linha]` em todas as mensagens
+- Logs consolidados por par após análise completa
+- Execução paralela de indicadores com logs consolidados
+- Logs de sinais automáticos quando 6/8 indicadores alinhados
 
 ### Gerenciadores
 
