@@ -47,14 +47,21 @@ class PluginIchimoku(Plugin):
         self.chikou = config_ichimoku.get("chikou", 26)
         
         self.plugin_dados_velas = None
+        self.plugin_banco_dados = None
+        self.testnet = self.config.get("bybit", {}).get("testnet", False)
+        self.exchange_name = "bybit"
     
     def definir_plugin_dados_velas(self, plugin_dados_velas):
         self.plugin_dados_velas = plugin_dados_velas
     
+    def definir_plugin_banco_dados(self, plugin_banco_dados):
+        """Define referência ao PluginBancoDados."""
+        self.plugin_banco_dados = plugin_banco_dados
+    
     def _inicializar_interno(self) -> bool:
         try:
             if self.logger:
-                self.logger.info(
+                self.logger.debug(
                     f"[{self.PLUGIN_NAME}] Inicializado. "
                     f"Ichimoku({self.tenkan},{self.kijun},{self.senkou_b},{self.chikou})"
                 )
@@ -176,13 +183,24 @@ class PluginIchimoku(Plugin):
                             if preco_atual < min(senkou_a_atual, senkou_b_atual):
                                 short = True
                         
+                        # Obtém valores completos do Ichimoku
+                        tenkan_atual = float(ichimoku["tenkan"].iloc[-1]) if not pd.isna(ichimoku["tenkan"].iloc[-1]) else None
+                        kijun_atual = float(ichimoku["kijun"].iloc[-1]) if not pd.isna(ichimoku["kijun"].iloc[-1]) else None
+                        chikou_atual = float(ichimoku["chikou"].iloc[-1]) if not pd.isna(ichimoku["chikou"].iloc[-1]) else None
+                        
                         resultados[symbol][timeframe] = {
                             "preco": preco_atual,
                             "senkou_a": senkou_a_atual,
                             "senkou_b": senkou_b_atual,
+                            "tenkan": tenkan_atual,
+                            "kijun": kijun_atual,
+                            "chikou": chikou_atual,
                             "long": long,
                             "short": short,
                         }
+                        
+                        # Salva dados no banco
+                        self._salvar_dados_banco(symbol, timeframe, df, resultados[symbol][timeframe])
                         
                         if (long or short) and self.logger:
                             self.logger.debug(
@@ -228,4 +246,63 @@ class PluginIchimoku(Plugin):
             if self.logger:
                 self.logger.error(f"[{self.PLUGIN_NAME}] Erro na execução: {e}", exc_info=True)
             return {"status": StatusExecucao.ERRO.value, "mensagem": f"Erro: {e}", "erro": str(e)}
+    
+    def _salvar_dados_banco(self, symbol: str, timeframe: str, df: pd.DataFrame, resultado: Dict[str, Any]):
+        """
+        Salva dados do Ichimoku no banco de dados.
+        
+        Args:
+            symbol: Símbolo do par (ex: "BTCUSDT")
+            timeframe: Timeframe (ex: "15m")
+            df: DataFrame com velas
+            resultado: Resultado do cálculo do indicador
+        """
+        try:
+            if not self.plugin_banco_dados:
+                return
+            
+            # Obtém open_time da última vela
+            if len(df) == 0:
+                return
+            
+            ultima_vela = df.iloc[-1]
+            open_time = None
+            
+            # Tenta obter timestamp da última vela
+            if "timestamp" in ultima_vela:
+                from datetime import datetime
+                timestamp = ultima_vela["timestamp"]
+                if isinstance(timestamp, (int, float)):
+                    open_time = datetime.fromtimestamp(timestamp / 1000)
+                elif isinstance(timestamp, datetime):
+                    open_time = timestamp
+            elif "datetime" in df.columns:
+                open_time = ultima_vela["datetime"]
+            
+            if not open_time:
+                return
+            
+            # Prepara dados para inserção
+            dados_ichimoku = {
+                "exchange": self.exchange_name,
+                "ativo": symbol,
+                "timeframe": timeframe,
+                "open_time": open_time,
+                "preco": resultado.get("preco"),
+                "senkou_a": resultado.get("senkou_a"),
+                "senkou_b": resultado.get("senkou_b"),
+                "tenkan": resultado.get("tenkan"),
+                "kijun": resultado.get("kijun"),
+                "chikou": resultado.get("chikou"),
+                "long": resultado.get("long", False),
+                "short": resultado.get("short", False),
+                "testnet": self.testnet
+            }
+            
+            # Insere no banco (usa upsert automático via constraint unique)
+            self.plugin_banco_dados.inserir("indicadores_ichimoku", [dados_ichimoku])
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"[{self.PLUGIN_NAME}] Erro ao salvar dados no banco para {symbol} {timeframe}: {e}")
 

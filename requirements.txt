@@ -41,3 +41,6 @@ yarl
 pytest
 pytest-timeout
 pytest-xdist
+
+# Para barras de progresso e UI melhorada
+rich

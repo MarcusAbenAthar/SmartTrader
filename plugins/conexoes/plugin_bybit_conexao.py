@@ -11,7 +11,7 @@ import ccxt
 from typing import Dict, Any, Optional
 from datetime import datetime
 import time
-from plugins.base_plugin import Plugin, execucao_segura
+from plugins.base_plugin import Plugin, execucao_segura, TipoPlugin
 from plugins.base_plugin import GerenciadorLogProtocol, GerenciadorBancoProtocol
 
 
@@ -38,6 +38,7 @@ class PluginBybitConexao(Plugin):
     PLUGIN_NAME = "PluginBybitConexao"
     plugin_versao = "v1.0.0"
     plugin_schema_versao = "v1.0.0"
+    plugin_tipo = TipoPlugin.CONEXAO
     
     def __init__(
         self,
@@ -121,7 +122,7 @@ class PluginBybitConexao(Plugin):
                 self._ultima_verificacao = datetime.now()
                 
                 if self.logger:
-                    self.logger.info(
+                    self.logger.debug(
                         f"[{self.PLUGIN_NAME}] Conexão estabelecida com sucesso "
                         f"(testnet: {self.testnet}, market: {self.market})"
                     )

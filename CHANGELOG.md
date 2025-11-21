@@ -2,6 +2,200 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
+## [v1.5.2] - 2025-11-16
+
+### Refinamento Completo dos Padrões Harmônicos e Multi-Timeframe
+
+#### Adicionado
+- ✅ **Harmonic Patterns (Padrão #27) - Implementação Completa**
+  - Detecção robusta de picos e vales usando algoritmo com filtragem de ruído (ATR-based)
+  - Validação rigorosa de proporções Fibonacci com função dedicada (`_validar_proporcao_fibonacci`)
+  - Padrões implementados: AB=CD, Gartley, Butterfly, Bat, Crab (Bullish e Bearish)
+  - Confirmação de completion (padrão completo dentro de 3 velas do final)
+  - Cálculo de ATR para filtrar picos/vales significativos
+  - Remoção de pontos muito próximos (mantém apenas o mais significativo)
+  - Logs TRACE completos para cada padrão detectado
+
+- ✅ **Multi-Timeframe Confirmation (Padrão #29) - Implementação Completa**
+  - Acesso real a dados de múltiplos timeframes via `dados_multi_tf`
+  - Sistema de hierarquia de timeframes (15m → 1h/4h, 1h → 4h)
+  - Lógica de confirmação com pesos dinâmicos (1h: 60%, 4h: 40%)
+  - Cálculo de força de tendência baseado em distância entre EMAs
+  - Score dinâmico baseado na força da confirmação (0.75-0.95)
+  - Fallback para aproximação quando dados multi-TF não disponíveis
+
+#### Melhorado
+- ✅ Algoritmo de detecção de picos/vales com janela configurável (min_periods=3)
+- ✅ Validação de proporções Fibonacci com tolerância configurável (padrão 5%)
+- ✅ Score dinâmico baseado na qualidade do padrão (ratio perfeito = score maior)
+- ✅ Integração completa com estrutura de dados do PluginDadosVelas
+- ✅ Sistema de pesos ponderados para múltiplas confirmações
+
+#### Impacto
+- 🎯 **Top 30 Padrões 100% Implementados**: Todos os 30 padrões agora estão completamente implementados e funcionais
+- 🎯 **Harmonic Patterns**: Detecção profissional com validação Fibonacci rigorosa
+- 🎯 **Multi-Timeframe**: Confirmação real usando dados de múltiplos timeframes simultaneamente
+- 📊 Meta informações completas com todos os pontos (X, A, B, C, D) e retrações
+- 📊 Logs TRACE com detalhes de confirmações e scores calculados
+
+#### Arquivos Modificados
+- `plugins/padroes/plugin_padroes.py` - Refinamento completo dos padrões #27 e #29
+- `docs/proxima_atualizacao.md` - Atualizado para refletir 100% de implementação
+- `STATUS_PROJETO.md` - Atualizado com detalhes da implementação completa
+
+## [v1.5.1] - 2025-11-16
+
+### Correções e Otimizações de Performance
+
+#### Corrigido
+- ✅ **Filtro Dinâmico - Logs Detalhados de Diagnóstico**
+  - Logs detalhados de rejeições por camada (Liquidez, Maturidade, Atividade, Integridade)
+  - Log DEBUG com detalhes dos primeiros 10 pares rejeitados (par, camada, motivo)
+  - Log WARNING quando nenhum par é aprovado, incluindo mediana de volume 24h
+  - Modo debug configurável via `MODO_DEBUG` ou config
+  - Estatísticas completas no relatório (rejeições por camada, mediana de volume)
+
+- ✅ **PluginDadosVelas - Otimizações de Performance**
+  - Processamento paralelo de timeframes dentro de cada thread
+  - Redução de ~60% no tempo de processamento (de ~7s para ~2-3s por par)
+  - Ajuste do cálculo de workers: até 3 pares = 1 worker por par, mais de 3 = min(pares // 3, 5)
+  - Métricas de tempo por par (tempo_processamento_ms, tempo médio, mínimo, máximo)
+  - Logs de métricas consolidadas no final de cada lote
+
+- ✅ **Identificação de Plugins Não Executados**
+  - Log INFO explicando quais plugins não foram executados e motivo
+  - Informação incluída no log do ciclo completo
+  - Campo `plugins_nao_executados` no retorno do GerenciadorPlugins
+
+#### Melhorado
+- ✅ **Intervalo do Ciclo Ajustado**
+  - Intervalo ajustado de 5s para 25s (configurável via `BOT_CYCLE_INTERVAL`)
+  - Permite processamento completo sem sobrecarga
+  - Comentários explicativos sobre o motivo do ajuste
+
+- ✅ **Métricas de Performance**
+  - Tracking de tempo de processamento por par
+  - Métricas consolidadas: tempo médio, mínimo, máximo
+  - Informações de performance incluídas nos dados retornados (`_metricas`)
+
+#### Impacto
+- ⚡ Redução de ~60% no tempo de processamento de timeframes (paralelo vs sequencial)
+- ⚡ Melhor utilização de workers (até 5 workers vs máximo 1 anteriormente)
+- ⚡ Ciclo ajustado para permitir processamento completo (25s vs 5s)
+- 🔍 Logs detalhados permitem identificar exatamente por que pares são rejeitados
+- 🔍 Métricas de tempo facilitam identificação de gargalos
+- 🔍 Identificação de plugins não executados facilita troubleshooting
+
+#### Arquivos Modificados
+- `plugins/filtro/plugin_filtro_dinamico.py` - Logs detalhados e modo debug
+- `plugins/indicadores/plugin_dados_velas.py` - Processamento paralelo, métricas, workers
+- `plugins/gerenciadores/gerenciador_plugins.py` - Identificação de plugins não executados
+- `main.py` - Logs melhorados do ciclo
+- `utils/main_config.py` - Intervalo do ciclo ajustado
+
+## [v1.5.0] - 2025-11-16
+
+### Validação Temporal e Ensemble de Padrões
+
+#### Adicionado
+- ✅ **Rolling Window Completo Implementado**
+  - Janela deslizante de 180 dias que recalcula métricas a cada 30 dias
+  - Tracking de performance ao longo do tempo
+  - Detecção automática de degradação de performance
+  - Ajuste automático de confidence baseado em performance recente
+  - Logs INFO, DEBUG, TRACE e WARNING completos
+  - Persistência de métricas de cada janela no banco
+
+- ✅ **Ensemble de Padrões Implementado e Integrado**
+  - Detecção de convergência de padrões (2-3 padrões apontando mesma direção)
+  - Sistema de pesos dinâmicos baseado em confidence
+  - Score combinado quando múltiplos padrões convergem
+  - Integrado no método `executar()` do PluginPadroes
+  - Logs TRACE para cálculos de ensemble
+
+- ✅ **Logs Completos de Padrões e IA**
+  - Logs INFO para resumo de padrões detectados
+  - Logs DEBUG para detalhamento
+  - Logs TRACE para cálculos internos e ensemble
+  - Logs WARNING para padrões fracos e degradação
+  - Logs de IA completos (INFO, DEBUG, TRACE, WARNING)
+
+#### Melhorado
+- ✅ Validação Temporal agora está 100% completa
+- ✅ Sistema de ensemble integrado no fluxo de detecção
+- ✅ Método de rankeamento por performance implementado (aguardando métricas de backtest)
+
+## [v1.4.0] - 2025-11-15
+
+### Sistema de Armazenamento de Indicadores Técnicos
+
+#### Adicionado
+- ✅ **Tabelas de Indicadores Técnicos** - 8 tabelas criadas no banco de dados
+  - `indicadores_ichimoku`: Dados do Ichimoku Cloud
+  - `indicadores_supertrend`: Dados do Supertrend
+  - `indicadores_bollinger`: Dados das Bollinger Bands
+  - `indicadores_volume`: Dados do Volume
+  - `indicadores_ema`: Dados de EMA Crossover
+  - `indicadores_macd`: Dados do MACD
+  - `indicadores_rsi`: Dados do RSI
+  - `indicadores_vwap`: Dados do VWAP
+  - Cada tabela armazena valores calculados, sinais LONG/SHORT e metadados
+  - Constraints de unicidade para evitar duplicatas
+  - Índices otimizados para consultas rápidas por par e timeframe
+  - Suporte a testnet/mainnet em todas as tabelas
+
+- ✅ **Persistência Automática de Indicadores**
+  - Todos os 8 plugins de indicadores agora salvam dados no banco após cálculo
+  - Dados são salvos automaticamente a cada execução
+  - Upsert automático via constraints de unicidade
+  - Histórico completo de indicadores disponível para análise
+
+- ✅ **Filtro Dinâmico do SmartTrader** - Sistema de Seleção Inteligente de Pares
+  - Localização: `plugins/filtro/plugin_filtro_dinamico.py`
+  - **4 Camadas de Filtro:**
+    1. **Liquidez Diária Real**: Mediana de Volume 24h (remove pares sem liquidez)
+    2. **Maturidade do Par**: Idade Mínima >= 60 dias (remove tokens novos)
+    3. **Atividade Recente**: Volume médio 15m e 1h > 0 (remove pares inativos)
+    4. **Integridade Técnica**: Timeframes vazios e fail_rate < 30% (remove pares problemáticos)
+  - Rastreamento de histórico de falhas por par
+  - Bloqueio automático de pares problemáticos (3 ciclos para timeframes vazios)
+  - Tabela `pares_filtro_dinamico` para rastreamento completo
+  - Integração completa com PluginDadosVelas (usa apenas pares aprovados)
+
+#### Melhorado
+- ✅ **PluginBancoDados** atualizado para v1.4.0
+  - Suporte completo para inserção de dados de indicadores
+  - Método `inserir()` genérico funciona com todas as tabelas de indicadores
+  - Upsert automático via constraints de unicidade
+
+- ✅ **PluginDadosVelas** integrado com Filtro Dinâmico
+  - Usa apenas pares aprovados pelo filtro para processamento
+  - Fallback para lista configurada se filtro não disponível
+  - Reduz desperdício de recursos em pares problemáticos
+
+#### Características do Filtro Dinâmico
+- 100% dinâmico, recalculado a cada ciclo
+- Adaptado ao estado real do mercado
+- Rastreia histórico de falhas por par
+- Bloqueia pares problemáticos automaticamente
+- Relatório completo de rejeições por camada
+- Salva resultados no banco para análise
+
+#### Impacto
+- ✅ Menos pares inúteis processados
+- ✅ Menos requisições desperdiçadas
+- ✅ Menos timeframes vazios
+- ✅ Menos ruído nos logs
+- ✅ Menos risco de rate-limit
+- ✅ Mais velocidade e consistência
+- ✅ Mais precisão e estabilidade
+- ✅ Histórico completo de indicadores para análise
+
+#### Documentação
+- ✅ `definicao_banco.md` atualizado com todas as novas tabelas
+- ✅ Estrutura completa de cada tabela de indicadores documentada
+- ✅ Exemplos de uso e índices explicados
+
 ## [v1.3.0] - 2025-11-08
 
 ### Sistema de Padrões de Trading - Top 10 Implementado

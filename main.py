@@ -7,7 +7,9 @@ Sistema 6/8 - Trading Bot com 8 indicadores técnicos.
 
 import sys
 import signal
+import logging
 from typing import Optional, Dict, Any
+from datetime import datetime
 from plugins.gerenciadores.gerenciador_log import GerenciadorLog
 from plugins.gerenciadores.gerenciador_banco import GerenciadorBanco
 from plugins.gerenciadores.gerenciador_plugins import GerenciadorPlugins
@@ -23,6 +25,7 @@ from plugins.indicadores.plugin_macd import PluginMacd
 from plugins.indicadores.plugin_rsi import PluginRsi
 from plugins.indicadores.plugin_vwap import PluginVwap
 from utils.main_config import carregar_config
+from utils.progress_helper import get_progress_helper
 
 # ================================
 # 1. LIMPEZA AUTOMÁTICA (sempre primeiro!)
@@ -43,7 +46,7 @@ if result.returncode != 0:
     print("Erro ao executar limpar_lixo.py. Encerrando.")
     sys.exit(1)
 
-print("Limpeza concluída. Iniciando main.py...\n")
+# Limpeza concluída silenciosamente
 
 
 class SmartTrader:
@@ -81,53 +84,63 @@ class SmartTrader:
             bool: True se inicializado com sucesso, False caso contrário.
         """
         try:
-            print("[SmartTrader] Inicializando sistema...")
-
-            # 1. Carrega configuração
-            self.config = carregar_config()
-            print("[SmartTrader] Configuração carregada")
-
-            # 2. Inicializa GerenciadorLog (já inicializa automaticamente no __init__)
-            self.gerenciador_log = GerenciadorLog(base_path="logs")
-            print("[SmartTrader] GerenciadorLog inicializado")
-
-            # 3. Inicializa GerenciadorBanco
-            self.gerenciador_banco = GerenciadorBanco(
-                gerenciador_log=self.gerenciador_log,
-                schema_path=self.config.get("db", {}).get(
-                    "schema_path", "utils/schema.json"
-                ),
-            )
-            if not self.gerenciador_banco.inicializar():
-                print("[SmartTrader] ERRO: Falha ao inicializar GerenciadorBanco")
-                return False
-            print("[SmartTrader] GerenciadorBanco inicializado")
-
-            # 4. Inicializa GerenciadorPlugins
-            self.gerenciador_plugins = GerenciadorPlugins(
-                gerenciador_log=self.gerenciador_log,
-                gerenciador_banco=self.gerenciador_banco,
-                config=self.config,
-            )
-            if not self.gerenciador_plugins.inicializar():
-                print("[SmartTrader] ERRO: Falha ao inicializar GerenciadorPlugins")
-                return False
-            print("[SmartTrader] GerenciadorPlugins inicializado")
+            # Total de etapas: config (1) + gerenciadores (4) + plugins (14) = 19
+            total_etapas = 19
+            progress = get_progress_helper()
             
-            # 4.1. Registra plugins principais
-            self._registrar_plugins()
+            with progress.progress_bar(
+                total=total_etapas,
+                description="[SmartTrader] Inicializando sistema"
+            ) as task:
+                # 1. Carrega configuração
+                self.config = carregar_config()
+                progress.update(advance=1)
 
-            # 5. Inicializa GerenciadorBot
-            self.gerenciador_bot = GerenciadorBot(
-                gerenciador_log=self.gerenciador_log,
-                config=self.config,
-            )
-            if not self.gerenciador_bot.inicializar():
-                print("[SmartTrader] ERRO: Falha ao inicializar GerenciadorBot")
-                return False
-            print("[SmartTrader] GerenciadorBot inicializado")
+                # 2. Inicializa GerenciadorLog (já inicializa automaticamente no __init__)
+                self.gerenciador_log = GerenciadorLog(base_path="logs")
+                progress.update(advance=1)
 
-            print("[SmartTrader] Sistema inicializado com sucesso!")
+                # 3. Inicializa GerenciadorBanco
+                self.gerenciador_banco = GerenciadorBanco(
+                    gerenciador_log=self.gerenciador_log,
+                    schema_path=self.config.get("db", {}).get(
+                        "schema_path", "utils/schema.json"
+                    ),
+                )
+                if not self.gerenciador_banco.inicializar():
+                    print("[SmartTrader] ERRO: Falha ao inicializar GerenciadorBanco")
+                    return False
+                progress.update(advance=1)
+
+                # 4. Inicializa GerenciadorPlugins
+                self.gerenciador_plugins = GerenciadorPlugins(
+                    gerenciador_log=self.gerenciador_log,
+                    gerenciador_banco=self.gerenciador_banco,
+                    config=self.config,
+                )
+                if not self.gerenciador_plugins.inicializar():
+                    print("[SmartTrader] ERRO: Falha ao inicializar GerenciadorPlugins")
+                    return False
+                
+                # Conecta GerenciadorPlugins ao GerenciadorBanco (para gerar schema)
+                self.gerenciador_banco.definir_gerenciador_plugins(self.gerenciador_plugins)
+                
+                progress.update(advance=1)
+                
+                # 4.1. Registra plugins principais (14 plugins)
+                if not self._registrar_plugins(progress):
+                    return False
+
+                # 5. Inicializa GerenciadorBot
+                self.gerenciador_bot = GerenciadorBot(
+                    gerenciador_log=self.gerenciador_log,
+                    config=self.config,
+                )
+                if not self.gerenciador_bot.inicializar():
+                    print("[SmartTrader] ERRO: Falha ao inicializar GerenciadorBot")
+                    return False
+                progress.update(advance=1)
+
             return True
 
         except Exception as e:
@@ -138,7 +151,7 @@ class SmartTrader:
                 )
             return False
     
-    def _registrar_plugins(self):
+    def _registrar_plugins(self, progress):
         """
         Registra todos os plugins no GerenciadorPlugins.
         
@@ -146,6 +159,9 @@ class SmartTrader:
         1. PluginBybitConexao (base para outros plugins)
         2. PluginBancoDados (banco de dados PostgreSQL)
         3. PluginDadosVelas (depende de PluginBybitConexao e PluginBancoDados)
+        
+        Args:
+            progress: Instância do ProgressHelper para atualizar barra de progresso
         """
         try:
             # 1. Registra PluginBybitConexao
@@ -158,7 +174,7 @@ class SmartTrader:
             if not self.gerenciador_plugins.registrar_plugin(plugin_conexao):
                 print("[SmartTrader] ERRO: Falha ao registrar PluginBybitConexao")
                 return False
-            print("[SmartTrader] PluginBybitConexao registrado")
+            progress.update(advance=1)
             
             # 2. Registra PluginBancoDados
             from plugins.plugin_banco_dados import PluginBancoDados
@@ -172,9 +188,31 @@ class SmartTrader:
             if not self.gerenciador_plugins.registrar_plugin(plugin_banco_dados):
                 print("[SmartTrader] ERRO: Falha ao registrar PluginBancoDados")
                 return False
-            print("[SmartTrader] PluginBancoDados registrado")
             
-            # 3. Registra PluginDadosVelas e conecta com PluginBybitConexao e PluginBancoDados
+            # Conecta PluginBancoDados ao GerenciadorBanco
+            self.gerenciador_banco.definir_banco_dados(plugin_banco_dados)
+            
+            progress.update(advance=1)
+            
+            # 3. Registra PluginFiltroDinamico e conecta com PluginBybitConexao e PluginBancoDados
+            from plugins.filtro.plugin_filtro_dinamico import PluginFiltroDinamico
+            
+            plugin_filtro_dinamico = PluginFiltroDinamico(
+                gerenciador_log=self.gerenciador_log,
+                gerenciador_banco=self.gerenciador_banco,
+                config=self.config,
+            )
+            
+            if not self.gerenciador_plugins.registrar_plugin(plugin_filtro_dinamico):
+                print("[SmartTrader] ERRO: Falha ao registrar PluginFiltroDinamico")
+                return False
+            
+            # Conecta PluginFiltroDinamico com PluginBybitConexao e PluginBancoDados
+            plugin_filtro_dinamico.definir_plugin_conexao(plugin_conexao)
+            plugin_filtro_dinamico.definir_plugin_banco_dados(plugin_banco_dados)
+            progress.update(advance=1)
+            
+            # 4. Registra PluginDadosVelas e conecta com PluginBybitConexao e PluginBancoDados
             plugin_dados_velas = PluginDadosVelas(
                 gerenciador_log=self.gerenciador_log,
                 gerenciador_banco=self.gerenciador_banco,
@@ -185,9 +223,14 @@ class SmartTrader:
                 print("[SmartTrader] ERRO: Falha ao registrar PluginDadosVelas")
                 return False
             
-            # Conecta PluginDadosVelas com PluginBybitConexao e PluginBancoDados
+            # Conecta PluginDadosVelas com PluginBybitConexao, PluginBancoDados e PluginFiltroDinamico
             plugin_dados_velas.definir_plugin_conexao(plugin_conexao)
             plugin_dados_velas.definir_plugin_banco_dados(plugin_banco_dados)
+            plugin_dados_velas.definir_plugin_filtro_dinamico(plugin_filtro_dinamico)
+            plugin_filtro_dinamico.definir_plugin_dados_velas(plugin_dados_velas)
+            
+            # Armazena referência ao filtro para uso no ciclo
+            self.plugin_filtro_dinamico = plugin_filtro_dinamico
             
             # Configura callback para processamento incremental
             def callback_par_processado(par: str, dados_par: Dict[str, Any]):
@@ -197,16 +240,18 @@ class SmartTrader:
                     dados_entrada_par = {par: dados_par}
                     self._processar_indicadores_par(dados_entrada_par)
                 except Exception as e:
-                    logger = self.gerenciador_log.get_logger("SmartTrader", "system")
-                    logger.error(
-                        f"[SmartTrader] Erro no callback de par processado para {par}: {e}",
-                        exc_info=True
-                    )
+                    if self.gerenciador_log:
+                        self.gerenciador_log.log_erro_bot(
+                            origem="SmartTrader",
+                            mensagem=f"Erro no callback de par processado para {par}",
+                            detalhes={"par": par, "erro": str(e)},
+                            exc_info=True
+                        )
             
             plugin_dados_velas.definir_callback_par_processado(callback_par_processado)
-            print("[SmartTrader] PluginDadosVelas registrado e conectado (processamento incremental ativado)")
+            progress.update(advance=1)
             
-            # 4. Registra os 8 plugins de indicadores técnicos
+            # 5. Registra os 8 plugins de indicadores técnicos
             indicadores = [
                 ("PluginIchimoku", PluginIchimoku),
                 ("PluginSupertrend", PluginSupertrend),
@@ -229,9 +274,55 @@ class SmartTrader:
                     print(f"[SmartTrader] ERRO: Falha ao registrar {nome}")
                     return False
                 
-                # Conecta com PluginDadosVelas
+                # Conecta com PluginDadosVelas e PluginBancoDados
                 plugin.definir_plugin_dados_velas(plugin_dados_velas)
-                print(f"[SmartTrader] {nome} registrado e conectado")
+                if hasattr(plugin, 'definir_plugin_banco_dados'):
+                    plugin.definir_plugin_banco_dados(plugin_banco_dados)
+                progress.update(advance=1)
+            
+            # 6. Registra PluginPadroes (detecção de padrões técnicos)
+            from plugins.padroes.plugin_padroes import PluginPadroes
+            
+            plugin_padroes = PluginPadroes(
+                gerenciador_log=self.gerenciador_log,
+                gerenciador_banco=self.gerenciador_banco,
+                config=self.config,
+            )
+            
+            if not self.gerenciador_plugins.registrar_plugin(plugin_padroes):
+                print("[SmartTrader] ERRO: Falha ao registrar PluginPadroes")
+                return False
+            
+            # Conecta PluginPadroes com PluginDadosVelas e PluginBancoDados
+            if hasattr(plugin_padroes, 'definir_plugin_dados_velas'):
+                plugin_padroes.definir_plugin_dados_velas(plugin_dados_velas)
+            if hasattr(plugin_padroes, 'definir_plugin_banco_dados'):
+                plugin_padroes.definir_plugin_banco_dados(plugin_banco_dados)
+            
+            # Armazena referência para uso no ciclo
+            self.plugin_padroes = plugin_padroes
+            progress.update(advance=1)
+            
+            # 7. Registra PluginIA (IA para análise e sugestões, com suporte a trades automáticos)
+            from plugins.ia.plugin_ia import PluginIA
+            
+            plugin_ia = PluginIA(
+                gerenciador_log=self.gerenciador_log,
+                gerenciador_banco=self.gerenciador_banco,
+                config=self.config,
+                plugin_bybit_conexao=plugin_conexao,
+            )
+            
+            if not self.gerenciador_plugins.registrar_plugin(plugin_ia):
+                print("[SmartTrader] ERRO: Falha ao registrar PluginIA")
+                return False
+            
+            # Conecta PluginIA com PluginBybitConexao (para trades automáticos)
+            plugin_ia.definir_plugin_bybit_conexao(plugin_conexao)
+            
+            # Armazena referência para uso no ciclo
+            self.plugin_ia = plugin_ia
+            progress.update(advance=1)
             
             return True
             
@@ -273,14 +364,207 @@ class SmartTrader:
                     if not self._em_execucao:
                         break
                     
+                    # Mede tempo do ciclo completo
+                    tempo_ciclo_inicio = time.time()
+                    
                     # Executa todos os plugins registrados
                     resultados = self.gerenciador_plugins.executar_plugins()
+                    
+                    # Executa IA no final do ciclo (após todos os pares serem processados)
+                    # CONSOLIDADO: Passa todos os dados de uma vez para evitar múltiplas chamadas à API
+                    dados_ia_count = len(self._dados_ia_ciclo) if hasattr(self, '_dados_ia_ciclo') else 0
+                    
+                    if hasattr(self, 'plugin_ia') and self.plugin_ia:
+                        if hasattr(self, '_dados_ia_ciclo') and self._dados_ia_ciclo:
+                            if self.gerenciador_log:
+                                logger_ia = self.gerenciador_log.get_logger("SmartTrader", "system")
+                                logger_ia.info(f"[SmartTrader] Processando IA para {dados_ia_count} par(es)...")
+                            try:
+                                # Passa TODOS os dados de uma vez para uma única chamada consolidada à API Groq
+                                # Isso reduz drasticamente o número de requisições e evita rate limits
+                                resultado_ia = self.plugin_ia.executar(dados_entrada={"dados_lote": self._dados_ia_ciclo})
+                                
+                                # Loga resultados da análise da IA
+                                if resultado_ia and resultado_ia.get("status") == "ok":
+                                    insights = resultado_ia.get("insights", [])
+                                    insights_gerados = resultado_ia.get("insights_gerados", 0)
+                                    pares_processados = resultado_ia.get("pares_processados", 0)
+                                    
+                                    # Log resumo da análise
+                                    if self.gerenciador_log:
+                                        self.gerenciador_log.log_evento(
+                                            tipo_log="system",
+                                            nome_origem="SmartTrader",
+                                            tipo_evento="ia_analise",
+                                            mensagem=f"IA: {insights_gerados} insight(s) gerado(s) para {pares_processados} par(es)",
+                                            nivel=logging.INFO
+                                        )
+                                    
+                                    # Loga cada insight
+                                    if insights:
+                                        for insight in insights:
+                                            par = insight.get("par", "UNKNOWN")
+                                            insight_texto = insight.get("insight", "")
+                                            confianca = insight.get("confianca", 0)
+                                            
+                                            # Validação: ignora insights vazios ou muito curtos
+                                            if not insight_texto or len(insight_texto.strip()) < 20:
+                                                continue
+                                            
+                                            # Limita tamanho do log para evitar poluição (máximo 500 caracteres)
+                                            insight_log = insight_texto
+                                            if len(insight_log) > 500:
+                                                insight_log = insight_texto[:500] + "... [truncado]"
+                                            
+                                            # Detecta se é mensagem genérica/repetitiva
+                                            mensagens_genericas = [
+                                                "não há padrões técnicos detectados",
+                                                "nenhuma sugestão de entrada",
+                                                "dados insuficientes",
+                                                "análise não disponível",
+                                                "descrição do padrão identificado: não há padrões",
+                                                "sugestão de entrada: nenhuma"
+                                            ]
+                                            
+                                            # Verifica se contém mensagens genéricas (case-insensitive)
+                                            insight_lower = insight_log.lower()
+                                            is_generico = any(
+                                                msg in insight_lower 
+                                                for msg in mensagens_genericas
+                                            )
+                                            
+                                            # Verifica se é mensagem repetitiva (mesma frase aparecendo múltiplas vezes)
+                                            palavras_unicas = len(set(insight_lower.split()))
+                                            palavras_totais = len(insight_lower.split())
+                                            # Se menos de 30% das palavras são únicas, provavelmente é repetitivo
+                                            is_repetitivo = palavras_totais > 20 and palavras_totais > 0 and (palavras_unicas / palavras_totais) < 0.3
+                                            
+                                            # Se for genérico OU repetitivo, não loga (reduz poluição de logs)
+                                            if is_generico or is_repetitivo:
+                                                # Mensagens genéricas/repetitivas são silenciadas
+                                                # Apenas loga em DEBUG se necessário para diagnóstico
+                                                if self.gerenciador_log:
+                                                    self.gerenciador_log.log_evento(
+                                                        tipo_log="ia",
+                                                        nome_origem="PluginIA",
+                                                        tipo_evento="insight_generico",
+                                                        mensagem=f"{par} — Insight genérico/repetitivo silenciado",
+                                                        nivel=logging.DEBUG,
+                                                        detalhes={
+                                                            "par": par,
+                                                            "is_generico": is_generico,
+                                                            "is_repetitivo": is_repetitivo,
+                                                            "tamanho_original": len(insight_texto),
+                                                            "palavras_unicas": palavras_unicas,
+                                                            "palavras_totais": palavras_totais
+                                                        }
+                                                    )
+                                                # Não continua - mensagem genérica/repetitiva não é logada em INFO
+                                                continue
+                                            else:
+                                                # Log insight válido (não genérico, não repetitivo)
+                                                if self.gerenciador_log:
+                                                    self.gerenciador_log.log_evento(
+                                                        tipo_log="ia",
+                                                        nome_origem="PluginIA",
+                                                        tipo_evento="insight",
+                                                        mensagem=f"{par} — {insight_log}",
+                                                        nivel=logging.INFO,
+                                                        detalhes={
+                                                            "confianca": confianca,
+                                                            "par": par,
+                                                            "insight_completo": insight_texto[:1000] if len(insight_texto) <= 1000 else insight_texto[:1000] + "... [truncado]",
+                                                            "tamanho_original": len(insight_texto),
+                                                            "is_generico": is_generico,
+                                                            "is_repetitivo": is_repetitivo
+                                                        }
+                                                    )
+                                            
+                                            # Log sugestão de entrada se houver
+                                            if insight.get("sugestao_entrada"):
+                                                sugestao = insight.get("sugestao_entrada", {})
+                                                if self.gerenciador_log:
+                                                    self.gerenciador_log.log_evento(
+                                                        tipo_log="system",
+                                                        nome_origem="SmartTrader",
+                                                        tipo_evento="ia_sugestao",
+                                                        mensagem=f"{par} — SUGESTÃO: {sugestao.get('direcao', 'N/A')} (confiança: {confianca:.1%})",
+                                                        nivel=logging.INFO
+                                                    )
+                                    elif insights_gerados == 0:
+                                        # Log se não gerou insights
+                                        if self.gerenciador_log:
+                                            self.gerenciador_log.log_evento(
+                                                tipo_log="ia",
+                                                nome_origem="PluginIA",
+                                                tipo_evento="sem_insights",
+                                                mensagem=f"Nenhum insight gerado para {pares_processados} par(es) processado(s)",
+                                                nivel=logging.WARNING
+                                            )
+                                
+                                # Limpa dados do ciclo após processar
+                                self._dados_ia_ciclo = []
+                            except Exception as e:
+                                if self.gerenciador_log:
+                                    self.gerenciador_log.log_erro_critico(
+                                        "SmartTrader",
+                                        f"Erro ao processar IA no final do ciclo: {e}",
+                                        exc_info=True
+                                    )
+                                # Limpa dados mesmo em caso de erro
+                                if hasattr(self, '_dados_ia_ciclo'):
+                                    self._dados_ia_ciclo = []
+                        else:
+                            # Log se não há dados para processar
+                            if dados_ia_count == 0 and self.gerenciador_log:
+                                logger_ia = self.gerenciador_log.get_logger("SmartTrader", "system")
+                                logger_ia.debug(f"[SmartTrader] Nenhum dado coletado para IA neste ciclo")
+                    
+                    tempo_ciclo_fim = time.time()
+                    tempo_ciclo_total_ms = (tempo_ciclo_fim - tempo_ciclo_inicio) * 1000
                     
                     # Log dos resultados
                     if resultados:
                         status = resultados.get("status", "unknown")
                         executados = resultados.get("total_executados", 0)
                         erros = resultados.get("total_erros", 0)
+                        tempo_total_ms = resultados.get("tempo_total_ms", 0)
+                        tempos_execucao = resultados.get("tempos_execucao", {})
+                        
+                        # Identifica plugins não executados
+                        plugins_nao_executados = resultados.get("plugins_nao_executados", [])
+                        nao_executados_count = len(plugins_nao_executados)
+                        
+                        # Log INFO: Ciclo completo com métricas consolidadas
+                        mensagem_ciclo = (
+                            f"Ciclo concluído — plugins: {executados}/{resultados.get('total_plugins', 0)}, "
+                            f"tempo: {tempo_ciclo_total_ms:.2f} ms"
+                        )
+                        if nao_executados_count > 0:
+                            mensagem_ciclo += f" | {nao_executados_count} não executado(s): {', '.join(plugins_nao_executados)}"
+                        
+                        if self.gerenciador_log:
+                            # Usa nova categoria CORE para logs do ciclo principal
+                            # Log INFO apenas se houver erros ou plugins não executados (reduz spam)
+                            # Caso contrário, usa DEBUG
+                            from plugins.gerenciadores.gerenciador_log import CategoriaLog
+                            nivel_log = logging.INFO if (erros > 0 or nao_executados_count > 0) else logging.DEBUG
+                            self.gerenciador_log.log_categoria(
+                                categoria=CategoriaLog.CORE,
+                                nome_origem="SmartTrader",
+                                mensagem=mensagem_ciclo,
+                                nivel=nivel_log,
+                                tipo_log="system",
+                                detalhes={
+                                    "status": status,
+                                    "executados": executados,
+                                    "erros": erros,
+                                    "nao_executados": nao_executados_count,
+                                    "plugins_nao_executados": plugins_nao_executados,
+                                    "tempo_total_ms": tempo_ciclo_total_ms,
+                                    "tempos_plugins": tempos_execucao
+                                }
+                            )
                         
                         if status == "ok":
                             logger.debug(
@@ -288,15 +572,22 @@ class SmartTrader:
                                 f"Plugins processados: {executados}/{resultados.get('total_plugins', 0)}"
                             )
                         elif status == "erro_parcial":
-                            logger.warning(
-                                f"[SmartTrader] Ciclo executado com erros parciais. "
-                                f"Sucesso: {executados}, Erros: {erros}"
-                            )
+                            if self.gerenciador_log:
+                                self.gerenciador_log.log_evento(
+                                    tipo_log="system",
+                                    nome_origem="SmartTrader",
+                                    tipo_evento="CICLO_PARCIAL",
+                                    mensagem="Ciclo executado com erros parciais",
+                                    nivel=logging.WARNING,
+                                    detalhes={"sucesso": executados, "erros": erros}
+                                )
                         else:
-                            logger.error(
-                                f"[SmartTrader] Erro no ciclo. "
-                                f"Erros: {erros}, Sucesso: {executados}"
-                            )
+                            if self.gerenciador_log:
+                                self.gerenciador_log.log_erro_bot(
+                                    origem="SmartTrader",
+                                    mensagem="Erro no ciclo",
+                                    detalhes={"erros": erros, "sucesso": executados}
+                                )
                     
                     # Agrega resultados dos indicadores e valida entrada
                     if resultados and self.gerenciador_bot:
@@ -304,26 +595,43 @@ class SmartTrader:
                         resultados_plugins = resultados.get("resultados", resultados)
                         self._processar_indicadores_e_validar(resultados_plugins)
                     
-                    # Aguarda próximo ciclo
-                    time.sleep(ciclo_interval)
+                    # Verifica se todos os lotes foram concluídos antes de hibernar
+                    todos_lotes_concluidos = False
+                    if resultados:
+                        resultados_plugins = resultados.get("resultados", resultados)
+                        if resultados_plugins and isinstance(resultados_plugins, dict):
+                            plugin_dados_velas = resultados_plugins.get("PluginDadosVelas", {})
+                            if isinstance(plugin_dados_velas, dict):
+                                todos_lotes_concluidos = plugin_dados_velas.get("todos_lotes_concluidos", False)
+                    
+                    # Hibernação/Cooldown APENAS após TODOS os lotes serem concluídos (60s fixos)
+                    if todos_lotes_concluidos:
+                        self._hibernar_cooldown(60)
                     
                 except KeyboardInterrupt:
                     break
                 except Exception as e:
-                    logger.error(
-                        f"[SmartTrader] Erro no ciclo de execução: {e}",
-                        exc_info=True
-                    )
-                    time.sleep(ciclo_interval)  # Continua mesmo com erro
+                    if self.gerenciador_log:
+                        self.gerenciador_log.log_erro_bot(
+                            origem="SmartTrader",
+                            mensagem="Erro no ciclo de execução",
+                            detalhes={"erro": str(e)},
+                            exc_info=True
+                        )
+                    # Hibernação mesmo em caso de erro (60s fixos)
+                    self._hibernar_cooldown(60)
 
         except KeyboardInterrupt:
             logger = self.gerenciador_log.get_logger("SmartTrader", "system")
             logger.info("[SmartTrader] Interrompido pelo usuário")
         except Exception as e:
-            logger = self.gerenciador_log.get_logger("SmartTrader", "system")
-            logger.critical(
-                f"[SmartTrader] Erro crítico na execução: {e}", exc_info=True
-            )
+            if self.gerenciador_log:
+                self.gerenciador_log.log_erro_critico(
+                    plugin_name="SmartTrader",
+                    mensagem="Erro crítico na execução",
+                    exc_info=True,
+                    detalhes={"erro": str(e)}
+                )
 
     def _processar_indicadores_par(self, dados_par: Dict[str, Any]):
         """
@@ -366,10 +674,13 @@ class SmartTrader:
                     resultado = plugin.executar(dados_entrada=dados_par)
                     return (nome_plugin, resultado)
                 except Exception as e:
-                    logger.error(
-                        f"[{par} | {nome_plugin}] ERROR — Falha no cálculo: {e}",
-                        exc_info=True
-                    )
+                    if self.gerenciador_log:
+                        self.gerenciador_log.log_erro_bot(
+                            origem=f"{nome_plugin}",
+                            mensagem=f"Falha no cálculo para {par}",
+                            detalhes={"par": par, "plugin": nome_plugin, "erro": str(e)},
+                            exc_info=True
+                        )
                     return (nome_plugin, None)
             
             # Executa indicadores em paralelo
@@ -389,6 +700,66 @@ class SmartTrader:
                 # Valida entrada com resultados dos indicadores
                 if self.gerenciador_bot:
                     self._processar_indicadores_e_validar(resultados_indicadores, par=par)
+                
+                # 1. Detecta padrões técnicos para este par
+                padroes_detectados = {}
+                if hasattr(self, 'plugin_padroes') and self.plugin_padroes:
+                    try:
+                        # Obtém dados de velas do PluginDadosVelas
+                        plugin_dados_velas = self.gerenciador_plugins.obter_plugin("PluginDadosVelas")
+                        if plugin_dados_velas and hasattr(plugin_dados_velas, 'dados_completos'):
+                            dados_velas_par = plugin_dados_velas.dados_completos.get("crus", {}).get(par, {})
+                            if dados_velas_par:
+                                resultado_padroes = self.plugin_padroes.executar(dados_entrada={par: dados_velas_par})
+                                if resultado_padroes.get("status") == "ok":
+                                    padroes_detectados = resultado_padroes.get("dados", {}).get(par, {})
+                                    if padroes_detectados and self.logger:
+                                        total_padroes = sum(len(p) if isinstance(p, list) else 1 for p in padroes_detectados.values())
+                                        self.logger.info(
+                                            f"[PADRÕES] {par} — {total_padroes} padrão(ões) detectado(s)"
+                                        )
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(
+                                f"[SmartTrader] Erro ao detectar padrões para {par}: {e}",
+                                exc_info=True
+                            )
+                
+                # NOTA: IA será executada no final do ciclo para todos os pares de uma vez
+                # Armazena dados para processamento consolidado posterior
+                if not hasattr(self, '_dados_ia_ciclo'):
+                    self._dados_ia_ciclo = []
+                
+                # Prepara dados para IA (será processado no final)
+                dados_ia_par = {
+                    "par": par,
+                    "indicadores": resultados_indicadores,
+                    "padroes": padroes_detectados,
+                    "contexto": {
+                        "timestamp": datetime.now().isoformat(),
+                        "velas_disponiveis": len(dados_par.get(par, {}).get("15m", {}).get("velas", [])) if dados_par.get(par, {}).get("15m") else 0
+                    }
+                }
+                
+                # Obtém contagem de indicadores (para contexto)
+                contagem_long = sum(1 for r in resultados_indicadores.values() 
+                                  if isinstance(r, dict) and r.get("dados", {}).get(par, {}).get("15m", {}).get("long", False))
+                contagem_short = sum(1 for r in resultados_indicadores.values() 
+                                   if isinstance(r, dict) and r.get("dados", {}).get(par, {}).get("15m", {}).get("short", False))
+                
+                dados_ia_par["contagem"] = max(contagem_long, contagem_short)
+                dados_ia_par["contagem_long"] = contagem_long
+                dados_ia_par["contagem_short"] = contagem_short
+                
+                self._dados_ia_ciclo.append(dados_ia_par)
+                
+                # Log DEBUG: Confirma que dados foram adicionados
+                if self.gerenciador_log:
+                    logger_debug = self.gerenciador_log.get_logger("SmartTrader", "system")
+                    logger_debug.debug(
+                        f"[SmartTrader] Dados de IA coletados para {par} "
+                        f"(total no ciclo: {len(self._dados_ia_ciclo)})"
+                    )
         
         except Exception as e:
             logger = self.gerenciador_log.get_logger("SmartTrader", "system")
@@ -480,11 +851,13 @@ class SmartTrader:
                 )
         
         except Exception as e:
-            logger = self.gerenciador_log.get_logger("SmartTrader", "system")
-            logger.error(
-                f"[PAIR {par}] ERROR — Falha ao consolidar resultados: {e}",
-                exc_info=True
-            )
+            if self.gerenciador_log:
+                self.gerenciador_log.log_erro_bot(
+                    origem="SmartTrader",
+                    mensagem=f"Falha ao consolidar resultados para {par}",
+                    detalhes={"par": par, "erro": str(e)},
+                    exc_info=True
+                )
     
     def _processar_indicadores_e_validar(self, resultados_plugins: Dict[str, Any], par: Optional[str] = None):
         """
@@ -562,6 +935,64 @@ class SmartTrader:
                 f"[SmartTrader] Erro ao processar indicadores: {e}",
                 exc_info=True
             )
+    
+    def _hibernar_cooldown(self, segundos: int):
+        """
+        Sistema de hibernação/cooldown pós-lote com contador animado.
+        
+        Durante o cooldown:
+        - Não executa plugins
+        - Não coleta velas
+        - Não faz requisições à API
+        - Não grava no banco
+        - Apenas atualiza contador no terminal com spinner animado
+        
+        Args:
+            segundos: Duração do cooldown em segundos
+        """
+        if segundos <= 0:
+            return
+        
+        import sys
+        import time
+        
+        # Spinner animado (caracteres Unicode)
+        spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+        spinner_index = 0
+        
+        # Fatia o tempo em intervalos de 0.5s para atualização suave
+        intervalo_atualizacao = 0.5
+        tempo_restante = float(segundos)
+        mensagem = ""  # Inicializa para evitar erro ao limpar
+        
+        try:
+            while tempo_restante > 0 and self._em_execucao:
+                # Seleciona caractere do spinner
+                spinner = spinner_chars[spinner_index % len(spinner_chars)]
+                spinner_index += 1
+                
+                # Formata mensagem
+                segundos_restantes = int(tempo_restante)
+                mensagem = f"[SmartTrader] Cooldown pós-lote — {segundos_restantes}s restantes... {spinner}"
+                
+                # Escreve na mesma linha (sobrescreve)
+                sys.stdout.write(f"\r{mensagem}")
+                sys.stdout.flush()
+                
+                # Aguarda intervalo
+                time.sleep(min(intervalo_atualizacao, tempo_restante))
+                tempo_restante -= intervalo_atualizacao
+            
+            # Limpa a linha ao finalizar
+            if mensagem:
+                sys.stdout.write("\r" + " " * len(mensagem) + "\r")
+                sys.stdout.flush()
+            
+        except KeyboardInterrupt:
+            # Limpa linha em caso de interrupção
+            sys.stdout.write("\r" + " " * 80 + "\r")
+            sys.stdout.flush()
+            raise
     
     def _validar_inicializacao(self) -> bool:
         """Valida se todos os componentes foram inicializados."""

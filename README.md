@@ -194,23 +194,65 @@ Todos os plugins seguem o padrão:
 - Armazenam dados em `self.dados_completos` (crus e analisados)
 - Persistem dados via `GerenciadorBanco`
 
+### Sistema de Armazenamento de Indicadores Técnicos (v1.4.0)
+
+**Tabelas de Indicadores:**
+- ✅ 8 tabelas criadas no banco de dados para armazenar dados dos indicadores
+- ✅ Persistência automática após cada cálculo
+- ✅ Histórico completo disponível para análise
+- ✅ Upsert automático para evitar duplicatas
+- ✅ Índices otimizados para consultas rápidas
+
+**Indicadores Armazenados:**
+- `indicadores_ichimoku`: Ichimoku Cloud (tenkan, kijun, senkou_a, senkou_b, chikou)
+- `indicadores_supertrend`: Supertrend (valor, direção)
+- `indicadores_bollinger`: Bollinger Bands (upper, middle, lower, width, squeeze)
+- `indicadores_volume`: Volume (médio, ratio, breakout)
+- `indicadores_ema`: EMA Crossover (rapida, lenta, crossover)
+- `indicadores_macd`: MACD (line, signal, histogram)
+- `indicadores_rsi`: RSI (valor)
+- `indicadores_vwap`: VWAP (valor, distância percentual)
+
+### Filtro Dinâmico do SmartTrader (v1.4.0)
+
+**Sistema de Seleção Inteligente de Pares:**
+- ✅ 4 camadas de filtro progressivas
+- ✅ 100% dinâmico, recalculado a cada ciclo
+- ✅ Adaptado ao estado real do mercado
+
+**Camadas de Filtro:**
+1. **Liquidez Diária Real**: Mediana de Volume 24h (remove pares sem liquidez)
+2. **Maturidade do Par**: Idade Mínima >= 60 dias (remove tokens novos)
+3. **Atividade Recente**: Volume médio 15m e 1h > 0 (remove pares inativos)
+4. **Integridade Técnica**: Timeframes vazios e fail_rate < 30% (remove pares problemáticos)
+
+**Benefícios:**
+- ❌ Menos pares inúteis processados
+- ❌ Menos requisições desperdiçadas
+- ❌ Menos timeframes vazios
+- ✅ Mais velocidade e consistência
+- ✅ Mais precisão e estabilidade
+
 ### Sistema de Padrões de Trading (v1.3.0)
 
 O sistema implementa detecção de padrões técnicos conforme `proxima_atualizacao.md`:
 
-**Top 30 Padrões Implementados:**
+**Top 30 Padrões Implementados (100% Completo - v1.5.2):**
 - ✅ Top 10 padrões principais
 - ✅ Próximos 20 padrões adicionais
-- ⚠️ Harmonic patterns (#27) - Estrutura básica (requer refinamento)
-- ⚠️ Multi-timeframe confirmation (#29) - Estrutura básica (requer dados multi-TF)
+- ✅ Harmonic patterns (#27) - Completo (AB=CD, Gartley, Butterfly, Bat, Crab) com detecção robusta e validação Fibonacci rigorosa
+- ✅ Multi-timeframe confirmation (#29) - Completo com acesso real a múltiplos timeframes e sistema de pesos
 
 **Características:**
 - Filtro de Regime de Mercado (Trending vs Range)
 - Confidence Decay (decaimento de confiança)
 - Score final: `(technical_score * 0.6) + (confidence * 0.4)`
 - Persistência automática no banco de dados
-- Validação Temporal implementada (Walk-Forward e OOS completos)
-- ⏳ Backtest completo e Ensemble pendentes
+- Validação Temporal implementada (Walk-Forward, OOS e Rolling Window completos)
+- ✅ Backtest completo implementado (PluginBacktest)
+- ✅ Ensemble de Padrões implementado e integrado
+- ✅ Harmonic Patterns com detecção robusta e validação Fibonacci
+- ✅ Multi-Timeframe Confirmation com acesso real a múltiplos timeframes
 
 ### Sistema de Logs (v2.0)
 

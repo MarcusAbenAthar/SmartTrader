@@ -340,7 +340,7 @@ class Plugin(ABC):
                 self._timestamp_inicio = datetime.now()
                 
                 if self.logger:
-                    self.logger.info(
+                    self.logger.debug(
                         f"[{self.PLUGIN_NAME}] Plugin inicializado com sucesso (versão: {self.plugin_versao})"
                     )
             

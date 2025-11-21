@@ -1,221 +1,133 @@
 {
-  "timestamp": "2025-11-15T16:34:00.839009+00:00",
+  "timestamp": "2025-11-21T23:30:56.106837+00:00",
   "moedas": {
+    "BTCUSDT": {
+      "par": "BTCUSDT",
+      "timeframes": {
+        "15m": {
+          "quantidade_velas": 60,
+          "ultima_vela": {
+            "timestamp": 1763767800000,
+            "datetime": "2025-11-21T20:30:00-03:00",
+            "open": 84990.8,
+            "high": 84990.8,
+            "low": 84905.4,
+            "close": 84968.0,
+            "volume": 31.236,
+            "fechada": false
+          }
+        },
+        "4h": {
+          "quantidade_velas": 60,
+          "ultima_vela": {
+            "timestamp": 1763755200000,
+            "datetime": "2025-11-21T17:00:00-03:00",
+            "open": 84164.6,
+            "high": 85373.0,
+            "low": 83412.2,
+            "close": 84958.4,
+            "volume": 14807.591,
+            "fechada": false
+          }
+        },
+        "1h": {
+          "quantidade_velas": 48,
+          "ultima_vela": {
+            "timestamp": 1763766000000,
+            "datetime": "2025-11-21T20:00:00-03:00",
+            "open": 84239.3,
+            "high": 84997.4,
+            "low": 84075.3,
+            "close": 84958.4,
+            "volume": 1638.305,
+            "fechada": false
+          }
+        }
+      }
+    },
+    "ETHUSDT": {
+      "par": "ETHUSDT",
+      "timeframes": {
+        "15m": {
+          "quantidade_velas": 60,
+          "ultima_vela": {
+            "timestamp": 1763767800000,
+            "datetime": "2025-11-21T20:30:00-03:00",
+            "open": 2759.99,
+            "high": 2760.03,
+            "low": 2756.24,
+            "close": 2758.8,
+            "volume": 715.7,
+            "fechada": false
+          }
+        },
+        "1h": {
+          "quantidade_velas": 48,
+          "ultima_vela": {
+            "timestamp": 1763766000000,
+            "datetime": "2025-11-21T20:00:00-03:00",
+            "open": 2719.98,
+            "high": 2760.03,
+            "low": 2711.23,
+            "close": 2758.8,
+            "volume": 35428.08,
+            "fechada": false
+          }
+        },
+        "4h": {
+          "quantidade_velas": 60,
+          "ultima_vela": {
+            "timestamp": 1763755200000,
+            "datetime": "2025-11-21T17:00:00-03:00",
+            "open": 2750.81,
+            "high": 2775.43,
+            "low": 2706.11,
+            "close": 2758.8,
+            "volume": 245336.1,
+            "fechada": false
+          }
+        }
+      }
+    },
     "DOGEUSDT": {
       "par": "DOGEUSDT",
       "timeframes": {
         "15m": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763224200000,
-            "datetime": "2025-11-15T13:30:00-03:00",
-            "open": 0.16205,
-            "high": 0.16226,
-            "low": 0.162,
-            "close": 0.16225,
-            "volume": 4603937.0,
+            "timestamp": 1763767800000,
+            "datetime": "2025-11-21T20:30:00-03:00",
+            "open": 0.13991,
+            "high": 0.13992,
+            "low": 0.13963,
+            "close": 0.13985,
+            "volume": 1602955.0,
             "fechada": false
           }
         },
         "1h": {
           "quantidade_velas": 48,
           "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 0.16302,
-            "high": 0.16333,
-            "low": 0.162,
-            "close": 0.16225,
-            "volume": 59279046.0,
+            "timestamp": 1763766000000,
+            "datetime": "2025-11-21T20:00:00-03:00",
+            "open": 0.13646,
+            "high": 0.13992,
+            "low": 0.13562,
+            "close": 0.13985,
+            "volume": 67172981.0,
             "fechada": false
           }
         },
         "4h": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 0.16302,
-            "high": 0.16333,
-            "low": 0.162,
-            "close": 0.16225,
-            "volume": 59312903.0,
-            "fechada": false
-          }
-        }
-      }
-    },
-    "ASTERUSDT": {
-      "par": "ASTERUSDT",
-      "timeframes": {
-        "15m": {
-          "quantidade_velas": 60,
-          "ultima_vela": {
-            "timestamp": 1763224200000,
-            "datetime": "2025-11-15T13:30:00-03:00",
-            "open": 1.1199,
-            "high": 1.1201,
-            "low": 1.1149,
-            "close": 1.1199,
-            "volume": 506557.0,
-            "fechada": false
-          }
-        },
-        "1h": {
-          "quantidade_velas": 48,
-          "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 1.1277,
-            "high": 1.129,
-            "low": 1.1149,
-            "close": 1.1199,
-            "volume": 3354425.0,
-            "fechada": false
-          }
-        },
-        "4h": {
-          "quantidade_velas": 60,
-          "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 1.1277,
-            "high": 1.129,
-            "low": 1.1149,
-            "close": 1.1197,
-            "volume": 3354714.0,
-            "fechada": false
-          }
-        }
-      }
-    },
-    "STRKUSDT": {
-      "par": "STRKUSDT",
-      "timeframes": {
-        "15m": {
-          "quantidade_velas": 60,
-          "ultima_vela": {
-            "timestamp": 1763224200000,
-            "datetime": "2025-11-15T13:30:00-03:00",
-            "open": 0.1806,
-            "high": 0.1818,
-            "low": 0.1799,
-            "close": 0.1818,
-            "volume": 2485964.9,
-            "fechada": false
-          }
-        },
-        "1h": {
-          "quantidade_velas": 48,
-          "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 0.1842,
-            "high": 0.188,
-            "low": 0.178,
-            "close": 0.1818,
-            "volume": 58912200.5,
-            "fechada": false
-          }
-        },
-        "4h": {
-          "quantidade_velas": 60,
-          "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 0.1842,
-            "high": 0.188,
-            "low": 0.178,
-            "close": 0.1818,
-            "volume": 58912200.5,
-            "fechada": false
-          }
-        }
-      }
-    },
-    "PIEVERSEUSDT": {
-      "par": "PIEVERSEUSDT",
-      "timeframes": {
-        "15m": {
-          "quantidade_velas": 60,
-          "ultima_vela": {
-            "timestamp": 1763224200000,
-            "datetime": "2025-11-15T13:30:00-03:00",
-            "open": 0.25404,
-            "high": 0.25683,
-            "low": 0.25111,
-            "close": 0.25232,
-            "volume": 3037313.0,
-            "fechada": false
-          }
-        },
-        "1h": {
-          "quantidade_velas": 28,
-          "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 0.25464,
-            "high": 0.275,
-            "low": 0.23546,
-            "close": 0.25232,
-            "volume": 58683587.0,
-            "fechada": false
-          }
-        },
-        "4h": {
-          "quantidade_velas": 8,
-          "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 0.25464,
-            "high": 0.275,
-            "low": 0.23546,
-            "close": 0.2523,
-            "volume": 58684737.0,
-            "fechada": false
-          }
-        }
-      }
-    },
-    "LTCUSDT": {
-      "par": "LTCUSDT",
-      "timeframes": {
-        "15m": {
-          "quantidade_velas": 60,
-          "ultima_vela": {
-            "timestamp": 1763224200000,
-            "datetime": "2025-11-15T13:30:00-03:00",
-            "open": 103.55,
-            "high": 103.63,
-            "low": 103.39,
-            "close": 103.5,
-            "volume": 1469.1,
-            "fechada": false
-          }
-        },
-        "1h": {
-          "quantidade_velas": 48,
-          "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 104.12,
-            "high": 104.35,
-            "low": 103.33,
-            "close": 103.5,
-            "volume": 41584.4,
-            "fechada": false
-          }
-        },
-        "4h": {
-          "quantidade_velas": 60,
-          "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 104.12,
-            "high": 104.35,
-            "low": 103.33,
-            "close": 103.5,
-            "volume": 41584.5,
+            "timestamp": 1763755200000,
+            "datetime": "2025-11-21T17:00:00-03:00",
+            "open": 0.13989,
+            "high": 0.14161,
+            "low": 0.13562,
+            "close": 0.13985,
+            "volume": 449208144.0,
             "fechada": false
           }
         }
@@ -227,39 +139,127 @@
         "15m": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763224200000,
-            "datetime": "2025-11-15T13:30:00-03:00",
-            "open": 38.831,
-            "high": 38.851,
-            "low": 38.77,
-            "close": 38.817,
-            "volume": 9819.27,
+            "timestamp": 1763767800000,
+            "datetime": "2025-11-21T20:30:00-03:00",
+            "open": 33.645,
+            "high": 33.645,
+            "low": 33.581,
+            "close": 33.614,
+            "volume": 1607.32,
             "fechada": false
           }
         },
         "1h": {
           "quantidade_velas": 48,
           "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 39.186,
-            "high": 39.188,
-            "low": 38.77,
-            "close": 38.817,
-            "volume": 117310.49,
+            "timestamp": 1763766000000,
+            "datetime": "2025-11-21T20:00:00-03:00",
+            "open": 33.074,
+            "high": 33.649,
+            "low": 32.992,
+            "close": 33.614,
+            "volume": 167473.96,
             "fechada": false
           }
         },
         "4h": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763222400000,
-            "datetime": "2025-11-15T13:00:00-03:00",
-            "open": 39.186,
-            "high": 39.188,
-            "low": 38.77,
-            "close": 38.82,
-            "volume": 117310.62,
+            "timestamp": 1763755200000,
+            "datetime": "2025-11-21T17:00:00-03:00",
+            "open": 33.493,
+            "high": 34.298,
+            "low": 32.992,
+            "close": 33.614,
+            "volume": 1044632.58,
+            "fechada": false
+          }
+        }
+      }
+    },
+    "ASTERUSDT": {
+      "par": "ASTERUSDT",
+      "timeframes": {
+        "15m": {
+          "quantidade_velas": 60,
+          "ultima_vela": {
+            "timestamp": 1763767800000,
+            "datetime": "2025-11-21T20:30:00-03:00",
+            "open": 1.2213,
+            "high": 1.2213,
+            "low": 1.2167,
+            "close": 1.2185,
+            "volume": 60903.0,
+            "fechada": false
+          }
+        },
+        "1h": {
+          "quantidade_velas": 48,
+          "ultima_vela": {
+            "timestamp": 1763766000000,
+            "datetime": "2025-11-21T20:00:00-03:00",
+            "open": 1.1996,
+            "high": 1.2225,
+            "low": 1.1949,
+            "close": 1.2185,
+            "volume": 4703587.0,
+            "fechada": false
+          }
+        },
+        "4h": {
+          "quantidade_velas": 60,
+          "ultima_vela": {
+            "timestamp": 1763755200000,
+            "datetime": "2025-11-21T17:00:00-03:00",
+            "open": 1.2317,
+            "high": 1.2526,
+            "low": 1.1949,
+            "close": 1.2185,
+            "volume": 23544107.0,
+            "fechada": false
+          }
+        }
+      }
+    },
+    "FARTCOINUSDT": {
+      "par": "FARTCOINUSDT",
+      "timeframes": {
+        "15m": {
+          "quantidade_velas": 60,
+          "ultima_vela": {
+            "timestamp": 1763767800000,
+            "datetime": "2025-11-21T20:30:00-03:00",
+            "open": 0.2205,
+            "high": 0.2207,
+            "low": 0.2196,
+            "close": 0.2203,
+            "volume": 344922.0,
+            "fechada": false
+          }
+        },
+        "1h": {
+          "quantidade_velas": 48,
+          "ultima_vela": {
+            "timestamp": 1763766000000,
+            "datetime": "2025-11-21T20:00:00-03:00",
+            "open": 0.2105,
+            "high": 0.2227,
+            "low": 0.2091,
+            "close": 0.2203,
+            "volume": 29202129.0,
+            "fechada": false
+          }
+        },
+        "4h": {
+          "quantidade_velas": 60,
+          "ultima_vela": {
+            "timestamp": 1763755200000,
+            "datetime": "2025-11-21T17:00:00-03:00",
+            "open": 0.2271,
+            "high": 0.2271,
+            "low": 0.2088,
+            "close": 0.2203,
+            "volume": 177498789.0,
             "fechada": false
           }
         }

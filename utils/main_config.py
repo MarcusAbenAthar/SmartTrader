@@ -34,14 +34,15 @@
 #   PAIRS_JSON_PATH=utils/pares.json
 #
 # [OPCIONAIS - Filtro Automático de Ativos]
-#   FILTRO_VOLUME_MINIMO=50000000    # Volume mínimo em USD/24h para filtro automático (padrão: $50M)
-#                                     # Se ativos = [] no código, filtra automaticamente por este valor
+#   REMOVIDO: FILTRO_VOLUME_MINIMO (não é mais necessário)
+#   O Filtro Dinâmico (PluginFiltroDinamico) faz a seleção inteligente de pares
 #
-# [OPCIONAIS - Inteligência Artificial (Llama 3)]
+# [OPCIONAIS - Inteligência Artificial (Groq API - 2025)]
 #   IA_ON=False              # True=modo ativo, False=modo passivo (padrão)
-#   LLAMA_API_KEY=sua_key    # Chave da API Llama (obrigatória se IA_ON=True)
-#   LLAMA_API_URL=https://api.llama.ai/v1/chat/completions
-#   LLAMA_MODEL=llama-3       # Modelo Llama a usar
+#   IA_TRADES=FALSE          # True=permite trades automáticos, False=apenas análise (padrão)
+#   IA_API_KEY=sua_key       # Chave da API Groq (obrigatória se IA_ON=True ou IA_TRADES=TRUE)
+#   IA_API_URL=https://api.groq.com/openai/v1/chat/completions
+#   IA_MODEL=llama-3.1-8b-instant  # Modelo Llama (2025) - Outros: llama-3.1-8b-instruct, llama-3.1-70b-instruct, mixtral-8x7b-instruct
 #   IA_DB_PATH removido - agora usa PostgreSQL via GerenciadorBanco
 #   IA_BUFFER_SIZE=10         # Tamanho do buffer para análise em lote
 #   IA_API_TIMEOUT=60         # Timeout da API em segundos
@@ -59,7 +60,6 @@ from utils.logging_config import get_logger
 from dotenv import load_dotenv
 import os
 from typing import Dict, Any, List, Optional
-import ccxt
 
 # Carrega o .env ANTES de ler qualquer variável de ambiente
 try:
@@ -94,97 +94,9 @@ PAIRS_JSON_PATH = os.getenv(
 _config_cache = None
 
 
-def _filtrar_ativos_por_volume(
-    api_key: Optional[str],
-    api_secret: Optional[str],
-    testnet: bool,
-    market: str,
-    volume_minimo: float,
-) -> List[str]:
-    """
-    Busca ativos da Bybit e filtra por volume mínimo em 24h.
-    
-    Se as credenciais não estiverem disponíveis, retorna lista vazia.
-    
-    Args:
-        api_key: API key da Bybit
-        api_secret: API secret da Bybit
-        testnet: Se está usando testnet
-        market: Tipo de mercado (linear, spot, etc.)
-        volume_minimo: Volume mínimo em USD (ex: 50000000 para $50M)
-        
-    Returns:
-        List[str]: Lista de símbolos filtrados por volume (ex: ["BTCUSDT", "ETHUSDT"])
-    """
-    if not api_key or not api_secret:
-        logger.warning(
-            "[main_config] Credenciais Bybit não disponíveis para filtro automático de ativos. "
-            "Usando lista vazia."
-        )
-        return []
-    
-    try:
-        # Cria conexão temporária com Bybit
-        exchange = ccxt.bybit({
-            'apiKey': api_key,
-            'secret': api_secret,
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': market,
-            },
-        })
-        
-        if testnet:
-            exchange.set_sandbox_mode(True)
-        
-        logger.info(
-            f"[main_config] Buscando pares da Bybit com volume mínimo de ${volume_minimo:,.0f}/24h..."
-        )
-        
-        # Busca todos os tickers (inclui volume 24h)
-        tickers = exchange.fetch_tickers()
-        
-        # Filtra por volume 24h
-        ativos_filtrados = []
-        volumes_por_ativo = {}
-        
-        for symbol, ticker in tickers.items():
-            # Volume 24h em USD (quote volume)
-            volume_24h = ticker.get('quoteVolume', 0)
-            
-            if volume_24h and volume_24h >= volume_minimo:
-                # Filtra apenas pares USDT
-                ativo = None
-                if symbol.endswith('/USDT:USDT'):
-                    # Linear swap (ex: BTC/USDT:USDT)
-                    ativo = symbol.replace('/USDT:USDT', 'USDT')
-                elif symbol.endswith('/USDT'):
-                    # Spot (ex: BTC/USDT)
-                    ativo = symbol.replace('/USDT', 'USDT')
-                
-                if ativo:
-                    # Mantém apenas o maior volume se houver múltiplos símbolos para o mesmo ativo
-                    if ativo not in volumes_por_ativo or volume_24h > volumes_por_ativo[ativo]:
-                        volumes_por_ativo[ativo] = volume_24h
-                        if ativo not in ativos_filtrados:
-                            ativos_filtrados.append(ativo)
-        
-        # Ordena por volume (maior primeiro)
-        ativos_filtrados.sort(key=lambda x: volumes_por_ativo.get(x, 0), reverse=True)
-        
-        logger.info(
-            f"[main_config] {len(ativos_filtrados)} par(es) encontrado(s) com volume >= ${volume_minimo:,.0f}/24h: "
-            f"{', '.join(ativos_filtrados[:10])}{'...' if len(ativos_filtrados) > 10 else ''}"
-        )
-        
-        return ativos_filtrados
-        
-    except Exception as e:
-        logger.error(
-            f"[main_config] Erro ao filtrar ativos por volume: {e}",
-            exc_info=True
-        )
-        return []
+# Função _filtrar_ativos_por_volume removida
+# O Filtro Dinâmico (PluginFiltroDinamico) agora faz a seleção inteligente de pares
+# usando 4 camadas de filtro: liquidez, maturidade, atividade recente e integridade técnica
 
 
 def _validar_estilos_sltp(estilos: dict) -> dict:
@@ -298,49 +210,27 @@ class ConfigManager:
         # ============================================================
         # CONFIGURAÇÕES DE PARES E OPERAÇÃO
         # ============================================================
-        # Filtro de volume mínimo para seleção automática de ativos (em USD)
-        # Padrão: $50M/24h (50000000)
-        filtro_volume_minimo = float(os.getenv("FILTRO_VOLUME_MINIMO", "50000000"))
-        
         # Ativos a serem observados
-        # Se lista vazia [], filtra automaticamente por volume mínimo
+        # O Filtro Dinâmico (PluginFiltroDinamico) fará a seleção inteligente de pares
         # Para definir manualmente, use: ["BTCUSDT", "ETHUSDT", ...]
-        # Para filtro automático, use: []
-        ativos = []  # Lista vazia ativa filtro automático por volume
+        # Para usar todos os pares disponíveis (o Filtro Dinâmico filtrará), use: []
+        ativos = []  # Lista vazia permite que o Filtro Dinâmico selecione os pares
         
-        # Se lista estiver vazia, filtra automaticamente por volume
+        # Se lista estiver vazia, usa lista padrão como ponto de partida
+        # O Filtro Dinâmico fará a filtragem inteligente posteriormente
         if not ativos:
             logger.info(
-                f"[main_config] Lista de ativos vazia. Ativando filtro automático por volume "
-                f"(mínimo: ${filtro_volume_minimo:,.0f}/24h)..."
+                "[main_config] Lista de ativos vazia. Usando lista padrão. "
+                "O Filtro Dinâmico fará a seleção inteligente de pares."
             )
-            # Busca credenciais para filtro automático
-            if testnet:
-                api_key_temp = os.getenv("TESTNET_BYBIT_API_KEY")
-                api_secret_temp = os.getenv("TESTNET_BYBIT_API_SECRET")
-            else:
-                api_key_temp = os.getenv("BYBIT_API_KEY")
-                api_secret_temp = os.getenv("BYBIT_API_SECRET")
-            
-            market_temp = os.getenv("BYBIT_MARKET", "linear")
-            
-            ativos = _filtrar_ativos_por_volume(
-                api_key_temp,
-                api_secret_temp,
-                testnet,
-                market_temp,
-                filtro_volume_minimo,
-            )
-            
-            if not ativos:
-                logger.warning(
-                    "[main_config] Nenhum ativo encontrado com o filtro de volume. "
-                    "Usando lista padrão: BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT"
-                )
-                ativos = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+            ativos = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
         # Intervalo do ciclo principal do bot (em segundos)
-        bot_cycle_interval = 5
+        # Intervalo do ciclo: ajustado para 25s (recomendado: 20-30s)
+        # Motivo: PluginDadosVelas leva ~19s para processar 4 pares
+        # Com mais pares, tempo aumenta proporcionalmente
+        # Intervalo maior evita sobrecarga e permite processamento completo
+        bot_cycle_interval = int(os.getenv("BOT_CYCLE_INTERVAL", "25"))
 
         # ============================================================
         # CREDENCIAIS BYBIT (conforme ambiente)
@@ -462,9 +352,6 @@ class ConfigManager:
                 "rr_ratio": 2.3,  # R:R fixo conforme estratégia (2.3 × SL)
             },
             
-            # Filtro de volume para seleção automática de ativos
-            "filtro_volume_minimo": filtro_volume_minimo,
-            
             # Configurações Bybit
             "bybit": {
                 "api_key": api_key,
@@ -548,12 +435,12 @@ class ConfigManager:
         }
 
         # ============================================================
-        # CONFIGURAÇÕES DE INTELIGÊNCIA ARTIFICIAL (Llama 3)
+        # CONFIGURAÇÕES DE INTELIGÊNCIA ARTIFICIAL (Groq API - 2025)
         # ============================================================
         config["ia"] = {
             "on": os.getenv("IA_ON", "False").lower() == "true",  # Modo passivo por padrão
-            "api_url": os.getenv("LLAMA_API_URL", "https://api.llama.ai/v1/chat/completions"),
-            "model": os.getenv("LLAMA_MODEL", "llama-3"),
+            "api_url": os.getenv("IA_API_URL", "https://api.groq.com/openai/v1/chat/completions"),
+            "model": os.getenv("IA_MODEL", "llama-3.1-8b-instant"),  # Groq 2025 - melhor custo x benefício
             "db_path": os.getenv("IA_DB_PATH", "data/ia_llama.db"),
             "buffer_size": int(os.getenv("IA_BUFFER_SIZE", "10")),  # Tamanho do buffer para análise
             "api_timeout": int(os.getenv("IA_API_TIMEOUT", "60")),  # Timeout da API em segundos

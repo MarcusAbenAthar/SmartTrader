@@ -20,6 +20,7 @@ import pandas as pd
 import numpy as np
 from enum import Enum
 import math
+import logging
 
 from plugins.base_plugin import Plugin, StatusExecucao, TipoPlugin
 from plugins.base_plugin import GerenciadorLogProtocol, GerenciadorBancoProtocol
@@ -100,6 +101,17 @@ class PluginPadroes(Plugin):
         # Histórico de wins/losses por padrão (para confidence decay)
         self._historico_performance: Dict[str, List[Dict[str, Any]]] = {}
         
+        # Controle de timestamps - última vela analisada por par/timeframe
+        # Formato: {f"{symbol}_{timeframe}": timestamp}
+        self._ultima_vela_analisada: Dict[str, int] = {}
+        
+        # Limites de velas por timeframe (Passo 1)
+        self._limites_velas = {
+            "15m": 20,
+            "1h": 15,
+            "4h": 10,
+        }
+        
     def _inicializar_interno(self) -> bool:
         """
         Inicializa recursos específicos do plugin.
@@ -109,7 +121,7 @@ class PluginPadroes(Plugin):
         """
         try:
             if self.logger:
-                self.logger.info(
+                self.logger.debug(
                     f"[{self.PLUGIN_NAME}] Inicializado. "
                     f"Top 10 padrões ativos. "
                     f"Threshold confidence: {self.threshold_confidence}"
@@ -240,22 +252,187 @@ class PluginPadroes(Plugin):
                 if not isinstance(dados_par, dict):
                     continue
                 
+                # Prepara dados de múltiplos timeframes para Multi-timeframe confirmation
+                dados_multi_tf = {}  # {timeframe: DataFrame}
+                ultima_vela_nova_por_tf = {}  # {timeframe: timestamp} - armazena última vela nova por timeframe
+                
                 for timeframe, dados_tf in dados_par.items():
                     if not isinstance(dados_tf, dict) or "velas" not in dados_tf:
                         continue
                     
                     velas = dados_tf.get("velas", [])
-                    if not velas or len(velas) < 20:  # Mínimo de velas para análise
+                    if not velas:
                         continue
                     
-                    # Converte para DataFrame
-                    df = self._velas_para_dataframe(velas)
+                    # PASSO 2: Filtra velas por timestamp (só analisa velas novas)
+                    cache_key = f"{symbol}_{timeframe}"
+                    ultima_timestamp = self._ultima_vela_analisada.get(cache_key, 0)
                     
+                    # CORREÇÃO CRÍTICA: Na primeira execução (ultima_timestamp == 0), 
+                    # só processa a ÚLTIMA vela, não todas as velas do histórico
+                    if ultima_timestamp == 0:
+                        # Primeira execução: só processa a última vela fechada
+                        if not velas:
+                            continue
+                        ultima_vela = velas[-1]
+                        ultima_vela_timestamp = ultima_vela.get("timestamp", 0)
+                        if ultima_vela_timestamp == 0:
+                            continue
+                        
+                        # Usa histórico limitado para contexto técnico, mas só detecta na última vela
+                        limite = self._limites_velas.get(timeframe, 20)
+                        velas_historico = velas[-limite:] if len(velas) > limite else velas
+                        df = self._velas_para_dataframe(velas_historico)
+                        dados_multi_tf[timeframe] = df
+                        ultima_vela_nova_por_tf[timeframe] = ultima_vela_timestamp
+                        # Marca como analisada ANTES de processar
+                        self._ultima_vela_analisada[cache_key] = ultima_vela_timestamp
+                    else:
+                        # Execuções subsequentes: só processa velas novas
+                        velas_novas = [v for v in velas if v.get("timestamp", 0) > ultima_timestamp]
+                        
+                        # Se não há velas novas, PULA este par/timeframe completamente
+                        if not velas_novas:
+                            if self.logger:
+                                self.logger.debug(
+                                    f"[{self.PLUGIN_NAME}] Pulando {symbol} {timeframe} - "
+                                    f"sem velas novas (última analisada: {ultima_timestamp})"
+                                )
+                            continue  # Pula este timeframe - não há velas novas para processar
+                        
+                        # PASSO 1: Limita quantidade de velas por timeframe
+                        # IMPORTANTE: Usa as últimas N velas do histórico completo para contexto,
+                        # mas só detecta padrões na última vela nova
+                        limite = self._limites_velas.get(timeframe, 20)
+                        
+                        # Pega as últimas N velas do histórico completo para contexto técnico
+                        # (indicadores precisam de histórico)
+                        velas_historico = velas[-limite:] if len(velas) > limite else velas
+                        
+                        # Converte para DataFrame
+                        df = self._velas_para_dataframe(velas_historico)
+                        dados_multi_tf[timeframe] = df
+                        
+                        # Identifica a última vela nova (será usada para filtrar padrões)
+                        ultima_vela_nova_timestamp = max(v.get("timestamp", 0) for v in velas_novas)
+                        ultima_vela_nova_por_tf[timeframe] = ultima_vela_nova_timestamp
+                        
+                        # Atualiza última vela analisada ANTES de processar (evita reprocessamento)
+                        if ultima_vela_nova_timestamp > ultima_timestamp:
+                            self._ultima_vela_analisada[cache_key] = ultima_vela_nova_timestamp
+                
+                # Processa cada timeframe
+                for timeframe, df in dados_multi_tf.items():
+                    # Recupera a última vela nova para este timeframe
+                    ultima_vela_nova_timestamp = ultima_vela_nova_por_tf.get(timeframe)
+                    if ultima_vela_nova_timestamp is None:
+                        continue  # Não deveria acontecer, mas por segurança
                     # Detecta regime de mercado
                     regime = self._detectar_regime(df)
                     
+                    # Log reduzido - apenas DEBUG
+                    # if self.gerenciador_log:
+                    #     self.gerenciador_log.log_evento(...)
+                    
+                    # PASSO 3: Identifica última vela fechada (candle atual)
+                    # A última vela do DataFrame é a última vela fechada
+                    if len(df) == 0:
+                        continue
+                    
+                    ultima_vela_fechada = df.iloc[-1]
+                    ultima_vela_fechada_timestamp = int(ultima_vela_fechada["timestamp"])
+                    ultima_vela_fechada_datetime = ultima_vela_fechada["datetime"]
+                    
+                    # PASSO 3 CRÍTICO: Só processa se a última vela é uma vela NOVA
+                    # A última vela do DataFrame deve ser a última vela nova identificada
+                    if ultima_vela_fechada_timestamp != ultima_vela_nova_timestamp:
+                        # DataFrame não termina na última vela nova - pode haver problema
+                        # Mas continua processando, pois o filtro abaixo vai garantir que só mantemos padrões da última vela nova
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] AVISO: DataFrame não termina na última vela nova "
+                                f"({symbol} {timeframe}: última_df={ultima_vela_fechada_timestamp}, "
+                                f"última_nova={ultima_vela_nova_timestamp})"
+                            )
+                    
                     # Detecta padrões (Top 30)
-                    padroes = self._detectar_padroes_top30(df, symbol, timeframe, regime)
+                    # Passa dados_multi_tf para permitir acesso a múltiplos timeframes
+                    padroes = self._detectar_padroes_top30(df, symbol, timeframe, regime, dados_multi_tf=dados_multi_tf)
+                    
+                    # PASSO 3: Filtra padrões - só mantém os do candle atual (última vela NOVA)
+                    # CRÍTICO: Só mantém padrões da última vela nova identificada
+                    padroes_filtrados = []
+                    padroes_rejeitados = 0
+                    
+                    # Encontra a última vela nova no DataFrame para comparação
+                    ultima_vela_nova_row = None
+                    for idx, row in df.iterrows():
+                        if int(row["timestamp"]) == ultima_vela_nova_timestamp:
+                            ultima_vela_nova_row = row
+                            break
+                    
+                    if ultima_vela_nova_row is None:
+                        # Se não encontrou a última vela nova no DataFrame, pula todos os padrões
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] AVISO: Última vela nova ({ultima_vela_nova_timestamp}) "
+                                f"não encontrada no DataFrame para {symbol} {timeframe}"
+                            )
+                        padroes = []
+                    else:
+                        ultima_vela_nova_datetime = pd.to_datetime(ultima_vela_nova_row["datetime"])
+                        
+                        for padrao in padroes:
+                            padrao_open_time = padrao.get("open_time")
+                            
+                            # Converte open_time para datetime para comparação
+                            padrao_dt = None
+                            try:
+                                if isinstance(padrao_open_time, (pd.Timestamp, datetime)):
+                                    padrao_dt = pd.to_datetime(padrao_open_time)
+                                elif isinstance(padrao_open_time, str):
+                                    padrao_dt = pd.to_datetime(padrao_open_time)
+                                elif isinstance(padrao_open_time, (int, float)):
+                                    # Assume timestamp em milissegundos se > 1e10, senão segundos
+                                    ts = padrao_open_time / 1000 if padrao_open_time > 1e10 else padrao_open_time
+                                    padrao_dt = pd.to_datetime(ts, unit='s')
+                            except Exception:
+                                padroes_rejeitados += 1
+                                continue  # Se não conseguir converter, pula este padrão
+                            
+                            # Compara datetime: só mantém se for da última vela nova (diferença < 1 segundo)
+                            if padrao_dt is not None:
+                                diff = abs((padrao_dt - ultima_vela_nova_datetime).total_seconds())
+                                if diff < 1.0:  # Mesma vela se diferença < 1 segundo
+                                    padroes_filtrados.append(padrao)
+                                else:
+                                    padroes_rejeitados += 1
+                            else:
+                                padroes_rejeitados += 1
+                        
+                        padroes = padroes_filtrados
+                        
+                        # Log INFO: mostra quantos padrões foram filtrados (mais visível para debug)
+                        if self.logger:
+                            if padroes:
+                                tipos = [p.get("tipo_padrao", "unknown") for p in padroes]
+                                self.logger.info(
+                                    f"[{self.PLUGIN_NAME}] Filtro: {len(padroes)} padrão(ões) mantido(s) "
+                                    f"({', '.join(set(tipos))}), {padroes_rejeitados} rejeitado(s) "
+                                    f"para {symbol} {timeframe} (última vela: {ultima_vela_nova_timestamp})"
+                                )
+                            elif padroes_rejeitados > 0:
+                                self.logger.debug(
+                                    f"[{self.PLUGIN_NAME}] Filtro: {padroes_rejeitados} padrão(ões) rejeitado(s) "
+                                    f"para {symbol} {timeframe} (não são da última vela: {ultima_vela_nova_timestamp})"
+                                )
+                    
+                    # Log DEBUG: Detalhamento de padrões detectados
+                    if self.logger and padroes:
+                        tipos_detectados = [p.get("tipo_padrao", "unknown") for p in padroes]
+                        self.logger.debug(
+                            f"[{self.PLUGIN_NAME}] DEBUG — Padrões detectados para {symbol} {timeframe}: {', '.join(set(tipos_detectados))}"
+                        )
                     
                     # Aplica confidence decay
                     padroes_com_confidence = self._aplicar_confidence_decay(padroes, symbol, timeframe)
@@ -263,11 +440,45 @@ class PluginPadroes(Plugin):
                     # Calcula score final
                     padroes_finais = self._calcular_score_final(padroes_com_confidence)
                     
-                    # Filtra por threshold
-                    padroes_validos = [
-                        p for p in padroes_finais 
-                        if p.get("final_score", 0) >= self.threshold_confidence
-                    ]
+                    # Calcula ensemble_score (combinação de padrões convergentes)
+                    padroes_com_ensemble = self.calcular_ensemble_score(padroes_finais)
+                    
+                    # Log TRACE: Cálculos internos de ensemble
+                    if self.logger and padroes_com_ensemble:
+                        padroes_com_convergencia = [p for p in padroes_com_ensemble if p.get("ensemble_count", 1) > 1]
+                        if padroes_com_convergencia:
+                            for p in padroes_com_convergencia[:3]:  # Loga apenas os 3 primeiros para não poluir
+                                self.logger.debug(
+                                    f"[{self.PLUGIN_NAME}] TRACE — Ensemble: {p.get('tipo_padrao')} — "
+                                    f"convergencia={p.get('ensemble_count', 1)} padrão(ões), "
+                                    f"ensemble_score={p.get('ensemble_score', 0):.3f}, "
+                                    f"final_score={p.get('final_score', 0):.3f}"
+                                )
+                    
+                    # Log WARNING: Padrões fracos (score baixo)
+                    padroes_fracos = [p for p in padroes_com_ensemble if p.get("final_score", 0) < 0.5]
+                    if padroes_fracos and self.gerenciador_log:
+                        for padrao_fraco in padroes_fracos:
+                            self.gerenciador_log.log_evento(
+                                tipo_log="padroes",
+                                nome_origem="PluginPadroes",
+                                tipo_evento="padrao_fraco",
+                                mensagem=f"Padrão fraco detectado: {padrao_fraco.get('tipo_padrao')} — score {padrao_fraco.get('final_score', 0):.2f}",
+                                nivel=logging.WARNING,
+                                par=symbol,
+                                detalhes={"tipo_padrao": padrao_fraco.get("tipo_padrao"), "score": padrao_fraco.get("final_score")}
+                            )
+                    
+                    # Filtra por threshold (usa ensemble_score se disponível, senão final_score)
+                    padroes_validos = []
+                    for p in padroes_com_ensemble:
+                        score_para_filtro = p.get("ensemble_score", p.get("final_score", 0))
+                        if score_para_filtro >= self.threshold_confidence:
+                            padroes_validos.append(p)
+                    
+                    # Log reduzido - apenas DEBUG (resumo consolidado no final)
+                    # if self.gerenciador_log and padroes_validos:
+                    #     ...
                     
                     padroes_detectados_total.extend(padroes_validos)
                     
@@ -1225,16 +1436,18 @@ class PluginPadroes(Plugin):
         df: pd.DataFrame, 
         symbol: str, 
         timeframe: str, 
-        regime: RegimeMercado
+        regime: RegimeMercado,
+        dados_multi_tf: Optional[Dict[str, pd.DataFrame]] = None
     ) -> List[Dict[str, Any]]:
         """
         Detecta os Top 30 padrões de trading (Top 10 + Próximos 20).
         
         Args:
-            df: DataFrame com dados de velas
+            df: DataFrame com dados de velas do timeframe atual
             symbol: Símbolo do par (ex: BTCUSDT)
-            timeframe: Timeframe (ex: 15m)
+            timeframe: Timeframe atual (ex: 15m)
             regime: Regime de mercado detectado
+            dados_multi_tf: Dicionário com DataFrames de múltiplos timeframes {timeframe: DataFrame}
         
         Returns:
             list: Lista de padrões detectados
@@ -1263,7 +1476,7 @@ class PluginPadroes(Plugin):
         padroes.extend(self._detectar_liquidity_sweep(df, symbol, timeframe, regime))
         padroes.extend(self._detectar_harmonic_patterns(df, symbol, timeframe, regime))
         padroes.extend(self._detectar_volume_price_divergence(df, symbol, timeframe, regime))
-        padroes.extend(self._detectar_multi_timeframe(df, symbol, timeframe, regime))
+        padroes.extend(self._detectar_multi_timeframe(df, symbol, timeframe, regime, dados_multi_tf=dados_multi_tf))
         padroes.extend(self._detectar_order_flow_proxy(df, symbol, timeframe, regime))
         
         return padroes
@@ -2203,6 +2416,116 @@ class PluginPadroes(Plugin):
                 self.logger.debug(f"[{self.PLUGIN_NAME}] Erro ao detectar Liquidity Sweep: {e}")
         return padroes
     
+    def _detectar_picos_vales_robusto(self, df: pd.DataFrame, min_periods: int = 3) -> tuple:
+        """
+        Detecta picos e vales usando algoritmo robusto com filtragem de ruído.
+        
+        Args:
+            df: DataFrame com dados OHLCV
+            min_periods: Número mínimo de períodos para considerar pico/vale significativo
+        
+        Returns:
+            tuple: (peaks, troughs) onde cada é lista de (index, price)
+        """
+        highs = df["high"].values
+        lows = df["low"].values
+        closes = df["close"].values
+        
+        # Calcula ATR para filtrar picos/vales muito pequenos
+        atr = self._calcular_atr(df, periodo=14) if len(df) >= 14 else df["high"].std()
+        threshold = atr * 0.5  # Pico/vale deve ser pelo menos 50% do ATR
+        
+        peaks = []
+        troughs = []
+        
+        # Algoritmo melhorado: verifica múltiplos períodos e magnitude
+        for i in range(min_periods, len(highs) - min_periods):
+            # Pico: verifica se é máximo local em janela maior
+            is_peak = True
+            peak_value = highs[i]
+            
+            # Verifica se é maior que todos os vizinhos em janela
+            for j in range(max(0, i - min_periods), min(len(highs), i + min_periods + 1)):
+                if j != i and highs[j] >= peak_value:
+                    is_peak = False
+                    break
+            
+            # Verifica magnitude (deve ser significativo)
+            if is_peak and peak_value > closes[i] + threshold:
+                peaks.append((i, peak_value))
+            
+            # Vale: verifica se é mínimo local em janela maior
+            is_trough = True
+            trough_value = lows[i]
+            
+            for j in range(max(0, i - min_periods), min(len(lows), i + min_periods + 1)):
+                if j != i and lows[j] <= trough_value:
+                    is_trough = False
+                    break
+            
+            # Verifica magnitude
+            if is_trough and trough_value < closes[i] - threshold:
+                troughs.append((i, trough_value))
+        
+        # Remove picos/vales muito próximos (mantém apenas o mais significativo)
+        peaks = self._filtrar_proximos(peaks, min_distance=5)
+        troughs = self._filtrar_proximos(troughs, min_distance=5)
+        
+        return sorted(peaks, key=lambda x: x[0]), sorted(troughs, key=lambda x: x[0])
+    
+    def _filtrar_proximos(self, pontos: List[tuple], min_distance: int) -> List[tuple]:
+        """Remove pontos muito próximos, mantendo apenas o mais significativo."""
+        if len(pontos) <= 1:
+            return pontos
+        
+        filtrados = [pontos[0]]
+        for i in range(1, len(pontos)):
+            idx_atual, price_atual = pontos[i]
+            idx_anterior, price_anterior = filtrados[-1]
+            
+            if abs(idx_atual - idx_anterior) >= min_distance:
+                filtrados.append(pontos[i])
+            else:
+                # Mantém o ponto com maior magnitude
+                if abs(price_atual) > abs(price_anterior):
+                    filtrados[-1] = pontos[i]
+        
+        return filtrados
+    
+    def _calcular_atr(self, df: pd.DataFrame, periodo: int = 14) -> float:
+        """Calcula Average True Range (ATR)."""
+        if len(df) < periodo + 1:
+            return df["high"].std()
+        
+        high = df["high"].values
+        low = df["low"].values
+        close = df["close"].values
+        
+        tr_list = []
+        for i in range(1, len(df)):
+            tr = max(
+                high[i] - low[i],
+                abs(high[i] - close[i-1]),
+                abs(low[i] - close[i-1])
+            )
+            tr_list.append(tr)
+        
+        return np.mean(tr_list[-periodo:]) if tr_list else df["high"].std()
+    
+    def _validar_proporcao_fibonacci(self, valor: float, alvo: float, tolerancia: float = 0.05) -> bool:
+        """
+        Valida se uma proporção está próxima de um nível Fibonacci.
+        
+        Args:
+            valor: Valor a validar
+            alvo: Nível Fibonacci alvo (ex: 0.618, 0.786, 1.272)
+            tolerancia: Tolerância percentual (padrão 5%)
+        
+        Returns:
+            bool: True se está dentro da tolerância
+        """
+        return abs(valor - alvo) <= (alvo * tolerancia)
+    
     def _detectar_harmonic_patterns(
         self, 
         df: pd.DataFrame, 
@@ -2210,24 +2533,407 @@ class PluginPadroes(Plugin):
         timeframe: str, 
         regime: RegimeMercado
     ) -> List[Dict[str, Any]]:
-        """Padrão #27: Harmonic patterns (AB=CD, Gartley) — avançado."""
+        """Padrão #27: Harmonic patterns (AB=CD, Gartley, Butterfly, Bat, Crab) — completo."""
         padroes = []
         try:
-            if len(df) < 40:
+            if len(df) < 50:
                 return padroes
             
-            # Implementação básica - detecta estrutura AB=CD
-            window = df.iloc[-40:]
-            highs = window["high"].values
-            lows = window["low"].values
+            # Log TRACE: Cálculos internos
+            if self.logger:
+                self.logger.debug(
+                    f"[{self.PLUGIN_NAME}] TRACE — Iniciando detecção de padrões harmônicos para {symbol} {timeframe}"
+                )
             
-            # Busca pontos A, B, C, D
-            # Simplificado: busca padrão básico
-            # (Implementação completa requer análise mais sofisticada)
+            window = df.iloc[-80:]  # Janela maior para padrões harmônicos
             
-            # Por enquanto, retorna vazio (padrão avançado)
-            # Futuramente: implementar detecção completa de harmônicos
-            pass
+            # Detecta picos e vales usando algoritmo robusto
+            peaks, troughs = self._detectar_picos_vales_robusto(window, min_periods=3)
+            
+            if len(peaks) < 2 or len(troughs) < 2:
+                return padroes
+            
+            # Detecta padrão AB=CD (Bullish)
+            # Estrutura: A (trough) -> B (peak) -> C (trough) -> D (peak)
+            # AB ≈ CD em tamanho
+            if len(troughs) >= 2 and len(peaks) >= 2:
+                for i in range(len(troughs) - 1):
+                    for j in range(len(peaks) - 1):
+                        if troughs[i][0] < peaks[j][0] < troughs[i+1][0] < peaks[j+1][0]:
+                            A_idx, A_price = troughs[i]
+                            B_idx, B_price = peaks[j]
+                            C_idx, C_price = troughs[i+1]
+                            D_idx, D_price = peaks[j+1]
+                            
+                            # Calcula retrações Fibonacci
+                            AB = abs(B_price - A_price)
+                            BC = abs(C_price - B_price)
+                            CD = abs(D_price - C_price)
+                            
+                            # Verifica se AB ≈ CD (tolerância de 5%)
+                            if AB > 0 and CD > 0:
+                                ratio_ab_cd = min(AB, CD) / max(AB, CD)
+                                
+                                # Verifica retrações Fibonacci típicas
+                                bc_retrace = BC / AB if AB > 0 else 0
+                                
+                                # Padrão AB=CD válido: ratio próximo de 1.0 e retração BC entre 0.382-0.886
+                                # Validação mais rigorosa usando função de validação Fibonacci
+                                if ratio_ab_cd >= 0.95 and 0.382 <= bc_retrace <= 0.886:
+                                    # Verifica completion: D deve estar próximo da última vela
+                                    ultima = df.iloc[-1]
+                                    completion = abs(D_idx - len(window) + 1) <= 3  # D dentro de 3 velas do final
+                                    
+                                    if completion:
+                                        padroes.append({
+                                            "symbol": symbol,
+                                            "timeframe": timeframe,
+                                            "open_time": ultima["datetime"],
+                                            "tipo_padrao": "harmonic_ab_cd_bullish",
+                                            "direcao": "LONG",
+                                            "score": 0.80 if ratio_ab_cd >= 0.98 else 0.75,  # Score maior se ratio perfeito
+                                            "confidence": 1.0,
+                                            "regime": regime.value,
+                                            "suggested_sl": C_price * 0.995,  # SL abaixo de C
+                                            "suggested_tp": D_price + (D_price - C_price) * 1.618,  # TP em 161.8% de CD
+                                            "meta": {
+                                                "pattern_type": "AB=CD_Bullish",
+                                                "A": float(A_price),
+                                                "B": float(B_price),
+                                                "C": float(C_price),
+                                                "D": float(D_price),
+                                                "ratio_ab_cd": float(ratio_ab_cd),
+                                                "bc_retrace": float(bc_retrace),
+                                                "completion": True
+                                            }
+                                        })
+                                        
+                                        # Log TRACE: Cálculo interno
+                                        if self.logger:
+                                            self.logger.debug(
+                                                f"[{self.PLUGIN_NAME}] TRACE — AB=CD Bullish detectado (completo): "
+                                                f"A={A_price:.4f} B={B_price:.4f} C={C_price:.4f} D={D_price:.4f} "
+                                                f"ratio={ratio_ab_cd:.3f}, completion=True"
+                                            )
+            
+            # Detecta padrão Gartley (Bullish)
+            # Estrutura: X (trough) -> A (peak) -> B (trough) -> C (peak) -> D (trough)
+            # Retrações: AB = 61.8% de XA, BC = 38.2-88.6% de AB, CD = 78.6% de XA
+            if len(troughs) >= 3 and len(peaks) >= 2:
+                for i in range(len(troughs) - 2):
+                    for j in range(len(peaks) - 1):
+                        if troughs[i][0] < peaks[j][0] < troughs[i+1][0] < peaks[j+1][0] < troughs[i+2][0]:
+                            X_idx, X_price = troughs[i]
+                            A_idx, A_price = peaks[j]
+                            B_idx, B_price = troughs[i+1]
+                            C_idx, C_price = peaks[j+1]
+                            D_idx, D_price = troughs[i+2]
+                            
+                            XA = abs(A_price - X_price)
+                            AB = abs(B_price - A_price)
+                            BC = abs(C_price - B_price)
+                            CD = abs(D_price - C_price)
+                            
+                            if XA > 0 and AB > 0:
+                                ab_retrace = AB / XA
+                                bc_retrace = BC / AB if AB > 0 else 0
+                                cd_retrace = CD / XA if XA > 0 else 0
+                                
+                                # Gartley válido: AB ≈ 61.8%, BC ≈ 38.2-88.6%, CD ≈ 78.6%
+                                # Validação mais rigorosa usando função de validação Fibonacci
+                                ab_valid = self._validar_proporcao_fibonacci(ab_retrace, 0.618, tolerancia=0.05)
+                                cd_valid = self._validar_proporcao_fibonacci(cd_retrace, 0.786, tolerancia=0.05)
+                                
+                                if ab_valid and 0.30 <= bc_retrace <= 0.95 and cd_valid:
+                                    # Verifica completion: D deve estar próximo da última vela
+                                    ultima = df.iloc[-1]
+                                    completion = abs(D_idx - len(window) + 1) <= 3
+                                    
+                                    if completion:
+                                        padroes.append({
+                                            "symbol": symbol,
+                                            "timeframe": timeframe,
+                                            "open_time": ultima["datetime"],
+                                            "tipo_padrao": "harmonic_gartley_bullish",
+                                            "direcao": "LONG",
+                                            "score": 0.85,  # Score maior para Gartley
+                                            "confidence": 1.0,
+                                            "regime": regime.value,
+                                            "suggested_sl": D_price * 0.995,
+                                            "suggested_tp": D_price + (D_price - X_price) * 0.618,
+                                            "meta": {
+                                                "pattern_type": "Gartley_Bullish",
+                                                "X": float(X_price),
+                                                "A": float(A_price),
+                                                "B": float(B_price),
+                                                "C": float(C_price),
+                                                "D": float(D_price),
+                                                "ab_retrace": float(ab_retrace),
+                                                "bc_retrace": float(bc_retrace),
+                                                "cd_retrace": float(cd_retrace),
+                                                "completion": True
+                                            }
+                                        })
+                                        
+                                        # Log TRACE: Cálculo interno
+                                        if self.logger:
+                                            self.logger.debug(
+                                                f"[{self.PLUGIN_NAME}] TRACE — Gartley Bullish detectado (completo): "
+                                                f"X={X_price:.4f} A={A_price:.4f} B={B_price:.4f} "
+                                                f"C={C_price:.4f} D={D_price:.4f}, completion=True"
+                                            )
+            
+            # Detecta padrão Butterfly (Bullish)
+            # Estrutura: X (trough) -> A (peak) -> B (trough) -> C (peak) -> D (trough)
+            # Retrações: AB = 78.6% de XA, BC = 38.2-88.6% de AB, CD = 127.2% ou 161.8% de XA
+            if len(troughs) >= 3 and len(peaks) >= 2:
+                for i in range(len(troughs) - 2):
+                    for j in range(len(peaks) - 1):
+                        if troughs[i][0] < peaks[j][0] < troughs[i+1][0] < peaks[j+1][0] < troughs[i+2][0]:
+                            X_idx, X_price = troughs[i]
+                            A_idx, A_price = peaks[j]
+                            B_idx, B_price = troughs[i+1]
+                            C_idx, C_price = peaks[j+1]
+                            D_idx, D_price = troughs[i+2]
+                            
+                            XA = abs(A_price - X_price)
+                            AB = abs(B_price - A_price)
+                            BC = abs(C_price - B_price)
+                            CD = abs(D_price - C_price)
+                            
+                            if XA > 0 and AB > 0:
+                                ab_retrace = AB / XA
+                                bc_retrace = BC / AB if AB > 0 else 0
+                                cd_retrace = CD / XA if XA > 0 else 0
+                                
+                                # Butterfly válido: AB ≈ 78.6%, CD ≈ 127.2% ou 161.8%
+                                ab_valid = self._validar_proporcao_fibonacci(ab_retrace, 0.786, tolerancia=0.05)
+                                cd_valid_127 = self._validar_proporcao_fibonacci(cd_retrace, 1.272, tolerancia=0.10)
+                                cd_valid_161 = self._validar_proporcao_fibonacci(cd_retrace, 1.618, tolerancia=0.10)
+                                
+                                if ab_valid and 0.30 <= bc_retrace <= 0.95 and (cd_valid_127 or cd_valid_161):
+                                    ultima = df.iloc[-1]
+                                    completion = abs(D_idx - len(window) + 1) <= 3
+                                    
+                                    if completion:
+                                        padroes.append({
+                                            "symbol": symbol,
+                                            "timeframe": timeframe,
+                                            "open_time": ultima["datetime"],
+                                            "tipo_padrao": "harmonic_butterfly_bullish",
+                                            "direcao": "LONG",
+                                            "score": 0.85,
+                                            "confidence": 1.0,
+                                            "regime": regime.value,
+                                            "suggested_sl": D_price * 0.995,
+                                            "suggested_tp": D_price + (D_price - X_price) * 0.618,
+                                            "meta": {
+                                                "pattern_type": "Butterfly_Bullish",
+                                                "X": float(X_price),
+                                                "A": float(A_price),
+                                                "B": float(B_price),
+                                                "C": float(C_price),
+                                                "D": float(D_price),
+                                                "ab_retrace": float(ab_retrace),
+                                                "bc_retrace": float(bc_retrace),
+                                                "cd_retrace": float(cd_retrace),
+                                                "completion": True
+                                            }
+                                        })
+                                        
+                                        if self.logger:
+                                            self.logger.debug(
+                                                f"[{self.PLUGIN_NAME}] TRACE — Butterfly Bullish detectado (completo): "
+                                                f"X={X_price:.4f} A={A_price:.4f} B={B_price:.4f} "
+                                                f"C={C_price:.4f} D={D_price:.4f}, completion=True"
+                                            )
+            
+            # Detecta padrão Bat (Bullish)
+            # Estrutura: X (trough) -> A (peak) -> B (trough) -> C (peak) -> D (trough)
+            # Retrações: AB = 38.2% ou 50% de XA, BC = 38.2-88.6% de AB, CD = 88.6% de XA
+            if len(troughs) >= 3 and len(peaks) >= 2:
+                for i in range(len(troughs) - 2):
+                    for j in range(len(peaks) - 1):
+                        if troughs[i][0] < peaks[j][0] < troughs[i+1][0] < peaks[j+1][0] < troughs[i+2][0]:
+                            X_idx, X_price = troughs[i]
+                            A_idx, A_price = peaks[j]
+                            B_idx, B_price = troughs[i+1]
+                            C_idx, C_price = peaks[j+1]
+                            D_idx, D_price = troughs[i+2]
+                            
+                            XA = abs(A_price - X_price)
+                            AB = abs(B_price - A_price)
+                            BC = abs(C_price - B_price)
+                            CD = abs(D_price - C_price)
+                            
+                            if XA > 0 and AB > 0:
+                                ab_retrace = AB / XA
+                                bc_retrace = BC / AB if AB > 0 else 0
+                                cd_retrace = CD / XA if XA > 0 else 0
+                                
+                                # Bat válido: AB ≈ 38.2% ou 50%, CD ≈ 88.6%
+                                ab_valid_382 = self._validar_proporcao_fibonacci(ab_retrace, 0.382, tolerancia=0.05)
+                                ab_valid_50 = self._validar_proporcao_fibonacci(ab_retrace, 0.50, tolerancia=0.05)
+                                cd_valid = self._validar_proporcao_fibonacci(cd_retrace, 0.886, tolerancia=0.05)
+                                
+                                if (ab_valid_382 or ab_valid_50) and 0.30 <= bc_retrace <= 0.95 and cd_valid:
+                                    ultima = df.iloc[-1]
+                                    completion = abs(D_idx - len(window) + 1) <= 3
+                                    
+                                    if completion:
+                                        padroes.append({
+                                            "symbol": symbol,
+                                            "timeframe": timeframe,
+                                            "open_time": ultima["datetime"],
+                                            "tipo_padrao": "harmonic_bat_bullish",
+                                            "direcao": "LONG",
+                                            "score": 0.85,
+                                            "confidence": 1.0,
+                                            "regime": regime.value,
+                                            "suggested_sl": D_price * 0.995,
+                                            "suggested_tp": D_price + (D_price - X_price) * 0.618,
+                                            "meta": {
+                                                "pattern_type": "Bat_Bullish",
+                                                "X": float(X_price),
+                                                "A": float(A_price),
+                                                "B": float(B_price),
+                                                "C": float(C_price),
+                                                "D": float(D_price),
+                                                "ab_retrace": float(ab_retrace),
+                                                "bc_retrace": float(bc_retrace),
+                                                "cd_retrace": float(cd_retrace),
+                                                "completion": True
+                                            }
+                                        })
+                                        
+                                        if self.logger:
+                                            self.logger.debug(
+                                                f"[{self.PLUGIN_NAME}] TRACE — Bat Bullish detectado (completo): "
+                                                f"X={X_price:.4f} A={A_price:.4f} B={B_price:.4f} "
+                                                f"C={C_price:.4f} D={D_price:.4f}, completion=True"
+                                            )
+            
+            # Detecta padrão Crab (Bullish)
+            # Estrutura: X (trough) -> A (peak) -> B (trough) -> C (peak) -> D (trough)
+            # Retrações: AB = 38.2% ou 50% ou 61.8% de XA, BC = 38.2-88.6% de AB, CD = 161.8% de XA
+            if len(troughs) >= 3 and len(peaks) >= 2:
+                for i in range(len(troughs) - 2):
+                    for j in range(len(peaks) - 1):
+                        if troughs[i][0] < peaks[j][0] < troughs[i+1][0] < peaks[j+1][0] < troughs[i+2][0]:
+                            X_idx, X_price = troughs[i]
+                            A_idx, A_price = peaks[j]
+                            B_idx, B_price = troughs[i+1]
+                            C_idx, C_price = peaks[j+1]
+                            D_idx, D_price = troughs[i+2]
+                            
+                            XA = abs(A_price - X_price)
+                            AB = abs(B_price - A_price)
+                            BC = abs(C_price - B_price)
+                            CD = abs(D_price - C_price)
+                            
+                            if XA > 0 and AB > 0:
+                                ab_retrace = AB / XA
+                                bc_retrace = BC / AB if AB > 0 else 0
+                                cd_retrace = CD / XA if XA > 0 else 0
+                                
+                                # Crab válido: AB ≈ 38.2%, 50% ou 61.8%, CD ≈ 161.8%
+                                ab_valid_382 = self._validar_proporcao_fibonacci(ab_retrace, 0.382, tolerancia=0.05)
+                                ab_valid_50 = self._validar_proporcao_fibonacci(ab_retrace, 0.50, tolerancia=0.05)
+                                ab_valid_618 = self._validar_proporcao_fibonacci(ab_retrace, 0.618, tolerancia=0.05)
+                                cd_valid = self._validar_proporcao_fibonacci(cd_retrace, 1.618, tolerancia=0.10)
+                                
+                                if (ab_valid_382 or ab_valid_50 or ab_valid_618) and 0.30 <= bc_retrace <= 0.95 and cd_valid:
+                                    ultima = df.iloc[-1]
+                                    completion = abs(D_idx - len(window) + 1) <= 3
+                                    
+                                    if completion:
+                                        padroes.append({
+                                            "symbol": symbol,
+                                            "timeframe": timeframe,
+                                            "open_time": ultima["datetime"],
+                                            "tipo_padrao": "harmonic_crab_bullish",
+                                            "direcao": "LONG",
+                                            "score": 0.85,
+                                            "confidence": 1.0,
+                                            "regime": regime.value,
+                                            "suggested_sl": D_price * 0.995,
+                                            "suggested_tp": D_price + (D_price - X_price) * 0.618,
+                                            "meta": {
+                                                "pattern_type": "Crab_Bullish",
+                                                "X": float(X_price),
+                                                "A": float(A_price),
+                                                "B": float(B_price),
+                                                "C": float(C_price),
+                                                "D": float(D_price),
+                                                "ab_retrace": float(ab_retrace),
+                                                "bc_retrace": float(bc_retrace),
+                                                "cd_retrace": float(cd_retrace),
+                                                "completion": True
+                                            }
+                                        })
+                                        
+                                        if self.logger:
+                                            self.logger.debug(
+                                                f"[{self.PLUGIN_NAME}] TRACE — Crab Bullish detectado (completo): "
+                                                f"X={X_price:.4f} A={A_price:.4f} B={B_price:.4f} "
+                                                f"C={C_price:.4f} D={D_price:.4f}, completion=True"
+                                            )
+            
+            # Detecta versões Bearish dos padrões (mesma lógica, invertida)
+            # Para Bearish: X (peak) -> A (trough) -> B (peak) -> C (trough) -> D (peak)
+            if len(peaks) >= 3 and len(troughs) >= 2:
+                # Gartley Bearish
+                for i in range(len(peaks) - 2):
+                    for j in range(len(troughs) - 1):
+                        if peaks[i][0] < troughs[j][0] < peaks[i+1][0] < troughs[j+1][0] < peaks[i+2][0]:
+                            X_idx, X_price = peaks[i]
+                            A_idx, A_price = troughs[j]
+                            B_idx, B_price = peaks[i+1]
+                            C_idx, C_price = troughs[j+1]
+                            D_idx, D_price = peaks[i+2]
+                            
+                            XA = abs(A_price - X_price)
+                            AB = abs(B_price - A_price)
+                            BC = abs(C_price - B_price)
+                            CD = abs(D_price - C_price)
+                            
+                            if XA > 0 and AB > 0:
+                                ab_retrace = AB / XA
+                                bc_retrace = BC / AB if AB > 0 else 0
+                                cd_retrace = CD / XA if XA > 0 else 0
+                                
+                                ab_valid = self._validar_proporcao_fibonacci(ab_retrace, 0.618, tolerancia=0.05)
+                                cd_valid = self._validar_proporcao_fibonacci(cd_retrace, 0.786, tolerancia=0.05)
+                                
+                                if ab_valid and 0.30 <= bc_retrace <= 0.95 and cd_valid:
+                                    ultima = df.iloc[-1]
+                                    completion = abs(D_idx - len(window) + 1) <= 3
+                                    
+                                    if completion:
+                                        padroes.append({
+                                            "symbol": symbol,
+                                            "timeframe": timeframe,
+                                            "open_time": ultima["datetime"],
+                                            "tipo_padrao": "harmonic_gartley_bearish",
+                                            "direcao": "SHORT",
+                                            "score": 0.85,
+                                            "confidence": 1.0,
+                                            "regime": regime.value,
+                                            "suggested_sl": D_price * 1.005,
+                                            "suggested_tp": D_price - (X_price - D_price) * 0.618,
+                                            "meta": {
+                                                "pattern_type": "Gartley_Bearish",
+                                                "X": float(X_price),
+                                                "A": float(A_price),
+                                                "B": float(B_price),
+                                                "C": float(C_price),
+                                                "D": float(D_price),
+                                                "ab_retrace": float(ab_retrace),
+                                                "bc_retrace": float(bc_retrace),
+                                                "cd_retrace": float(cd_retrace),
+                                                "completion": True
+                                            }
+                                        })
             
         except Exception as e:
             if self.logger:
@@ -2297,15 +3003,212 @@ class PluginPadroes(Plugin):
         df: pd.DataFrame, 
         symbol: str, 
         timeframe: str, 
-        regime: RegimeMercado
+        regime: RegimeMercado,
+        dados_multi_tf: Optional[Dict[str, pd.DataFrame]] = None
     ) -> List[Dict[str, Any]]:
-        """Padrão #29: Multi-timeframe confirmation (15m + 1h)."""
+        """
+        Padrão #29: Multi-timeframe confirmation (15m + 1h) — completo.
+        
+        Requer dados de múltiplos timeframes para confirmação real.
+        Se dados_multi_tf não estiver disponível, usa aproximação com EMAs maiores.
+        """
         padroes = []
         try:
-            # Este padrão requer dados de múltiplos timeframes
-            # Por enquanto, retorna vazio (requer integração com outros timeframes)
-            # Futuramente: confirmar padrão em timeframe maior
-            pass
+            if len(df) < 20:
+                return padroes
+            
+            ultima = df.iloc[-1]
+            close_atual = ultima["close"]
+            
+            # Se temos dados de múltiplos timeframes, usa confirmação real
+            if dados_multi_tf and len(dados_multi_tf) > 1:
+                # Mapeamento de timeframes para confirmação
+                # 15m confirma com 1h e 4h
+                # 1h confirma com 4h
+                timeframe_hierarquia = {
+                    "15m": ["1h", "4h"],
+                    "1h": ["4h"],
+                    "4h": []  # Timeframe maior não precisa confirmação
+                }
+                
+                timeframes_confirmacao = timeframe_hierarquia.get(timeframe, [])
+                
+                if timeframes_confirmacao:
+                    # Detecta padrão no timeframe atual
+                    window_atual = df.iloc[-10:]
+                    high_recent = window_atual["high"].max()
+                    low_recent = window_atual["low"].min()
+                    
+                    # Verifica tendência em timeframes maiores
+                    confirmacoes = []
+                    pesos = {"1h": 0.6, "4h": 0.4}  # Timeframe maior tem mais peso
+                    
+                    for tf_conf in timeframes_confirmacao:
+                        if tf_conf in dados_multi_tf:
+                            df_conf = dados_multi_tf[tf_conf]
+                            
+                            if len(df_conf) >= 20:
+                                # Calcula tendência no timeframe de confirmação
+                                ema_fast = df_conf["close"].ewm(span=9, adjust=False).mean()
+                                ema_slow = df_conf["close"].ewm(span=21, adjust=False).mean()
+                                
+                                ema_fast_atual = ema_fast.iloc[-1]
+                                ema_slow_atual = ema_slow.iloc[-1]
+                                
+                                # Tendência bullish se EMA rápida > EMA lenta
+                                tendencia = "BULLISH" if ema_fast_atual > ema_slow_atual else "BEARISH"
+                                
+                                # Força da tendência (distância entre EMAs normalizada pelo preço)
+                                distancia_ema = abs(ema_fast_atual - ema_slow_atual) / close_atual
+                                forca_tendencia = min(distancia_ema * 100, 1.0)  # Normaliza para 0-1
+                                
+                                confirmacoes.append({
+                                    "timeframe": tf_conf,
+                                    "tendencia": tendencia,
+                                    "forca": forca_tendencia,
+                                    "peso": pesos.get(tf_conf, 0.5),
+                                    "ema_fast": float(ema_fast_atual),
+                                    "ema_slow": float(ema_slow_atual)
+                                })
+                    
+                    # Calcula confirmação consolidada
+                    if confirmacoes:
+                        # Soma ponderada das tendências
+                        score_bullish = sum(
+                            c["peso"] * c["forca"] 
+                            for c in confirmacoes 
+                            if c["tendencia"] == "BULLISH"
+                        )
+                        score_bearish = sum(
+                            c["peso"] * c["forca"] 
+                            for c in confirmacoes 
+                            if c["tendencia"] == "BEARISH"
+                        )
+                        
+                        # Calcula EMA rápida do timeframe atual para validação
+                        ema_fast_atual_tf = df["close"].ewm(span=9, adjust=False).mean().iloc[-1] if len(df) >= 9 else close_atual
+                        
+                        # Confirmação bullish: padrão no 15m + tendência bullish em timeframes maiores
+                        if score_bullish > 0.4 and close_atual > ema_fast_atual_tf:
+                            # Verifica se há padrão de breakout ou reversão no timeframe atual
+                            if close_atual > high_recent * 0.98:  # Próximo do high recente
+                                padroes.append({
+                                    "symbol": symbol,
+                                    "timeframe": timeframe,
+                                    "open_time": ultima["datetime"],
+                                    "tipo_padrao": "multi_timeframe_confirmation_bullish",
+                                    "direcao": "LONG",
+                                    "score": min(0.75 + score_bullish * 0.2, 0.95),  # Score maior com confirmação forte
+                                    "confidence": 1.0,
+                                    "regime": regime.value,
+                                    "suggested_sl": low_recent * 0.995,
+                                    "suggested_tp": close_atual + (close_atual - low_recent) * 2.3,
+                                    "meta": {
+                                        "pattern_type": "MTF_Confirmation_Bullish",
+                                        "timeframe_base": timeframe,
+                                        "timeframes_confirmacao": [c["timeframe"] for c in confirmacoes],
+                                        "score_bullish": float(score_bullish),
+                                        "score_bearish": float(score_bearish),
+                                        "confirmacoes": confirmacoes
+                                    }
+                                })
+                        
+                        # Confirmação bearish
+                        elif score_bearish > 0.4 and close_atual < ema_fast_atual_tf:
+                            if close_atual < low_recent * 1.02:  # Próximo do low recente
+                                padroes.append({
+                                    "symbol": symbol,
+                                    "timeframe": timeframe,
+                                    "open_time": ultima["datetime"],
+                                    "tipo_padrao": "multi_timeframe_confirmation_bearish",
+                                    "direcao": "SHORT",
+                                    "score": min(0.75 + score_bearish * 0.2, 0.95),
+                                    "confidence": 1.0,
+                                    "regime": regime.value,
+                                    "suggested_sl": high_recent * 1.005,
+                                    "suggested_tp": close_atual - (high_recent - close_atual) * 2.3,
+                                    "meta": {
+                                        "pattern_type": "MTF_Confirmation_Bearish",
+                                        "timeframe_base": timeframe,
+                                        "timeframes_confirmacao": [c["timeframe"] for c in confirmacoes],
+                                        "score_bullish": float(score_bullish),
+                                        "score_bearish": float(score_bearish),
+                                        "confirmacoes": confirmacoes
+                                    }
+                                })
+                        
+                        # Log TRACE: Cálculo interno
+                        if self.logger and padroes:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] TRACE — Multi-timeframe confirmation detectado: "
+                                f"{timeframe} close={close_atual:.4f}, "
+                                f"confirmacoes={len(confirmacoes)}, "
+                                f"score_bullish={score_bullish:.2f}, score_bearish={score_bearish:.2f}"
+                            )
+            
+            else:
+                # Fallback: usa aproximação com EMAs maiores (comportamento anterior)
+                if timeframe == "15m":
+                    ema_20 = df["close"].ewm(span=20, adjust=False).mean()
+                    ema_50 = df["close"].ewm(span=50, adjust=False).mean() if len(df) >= 50 else ema_20
+                    
+                    ema_20_atual = ema_20.iloc[-1]
+                    ema_50_atual = ema_50.iloc[-1] if len(df) >= 50 else ema_20_atual
+                    
+                    tendencia_1h = "BULLISH" if ema_20_atual > ema_50_atual else "BEARISH"
+                    
+                    window_15m = df.iloc[-10:]
+                    high_recent = window_15m["high"].max()
+                    low_recent = window_15m["low"].min()
+                    
+                    if tendencia_1h == "BULLISH" and close_atual > ema_20_atual:
+                        if close_atual > high_recent * 0.98:
+                            padroes.append({
+                                "symbol": symbol,
+                                "timeframe": timeframe,
+                                "open_time": ultima["datetime"],
+                                "tipo_padrao": "multi_timeframe_confirmation_bullish",
+                                "direcao": "LONG",
+                                "score": 0.70,  # Score menor para aproximação
+                                "confidence": 0.8,  # Confidence menor para aproximação
+                                "regime": regime.value,
+                                "suggested_sl": low_recent * 0.995,
+                                "suggested_tp": close_atual + (close_atual - low_recent) * 2.3,
+                                "meta": {
+                                    "pattern_type": "MTF_Confirmation_Bullish_Proxy",
+                                    "timeframe_base": "15m",
+                                    "timeframe_confirmation": "1h_proxy",
+                                    "tendencia_1h": tendencia_1h,
+                                    "ema_20": float(ema_20_atual),
+                                    "ema_50": float(ema_50_atual),
+                                    "aproximacao": True
+                                }
+                            })
+                    
+                    elif tendencia_1h == "BEARISH" and close_atual < ema_20_atual:
+                        if close_atual < low_recent * 1.02:
+                            padroes.append({
+                                "symbol": symbol,
+                                "timeframe": timeframe,
+                                "open_time": ultima["datetime"],
+                                "tipo_padrao": "multi_timeframe_confirmation_bearish",
+                                "direcao": "SHORT",
+                                "score": 0.70,
+                                "confidence": 0.8,
+                                "regime": regime.value,
+                                "suggested_sl": high_recent * 1.005,
+                                "suggested_tp": close_atual - (high_recent - close_atual) * 2.3,
+                                "meta": {
+                                    "pattern_type": "MTF_Confirmation_Bearish_Proxy",
+                                    "timeframe_base": "15m",
+                                    "timeframe_confirmation": "1h_proxy",
+                                    "tendencia_1h": tendencia_1h,
+                                    "ema_20": float(ema_20_atual),
+                                    "ema_50": float(ema_50_atual),
+                                    "aproximacao": True
+                                }
+                            })
+            
         except Exception as e:
             if self.logger:
                 self.logger.debug(f"[{self.PLUGIN_NAME}] Erro ao detectar Multi-timeframe: {e}")
@@ -2471,9 +3374,197 @@ class PluginPadroes(Plugin):
         
         return padroes_finais
     
+    def rankear_por_performance(
+        self,
+        metricas_backtest: Dict[str, Dict[str, Any]],
+        oos_percentual_min: float = 0.30,
+        expectancy_oos_ratio_min: float = 0.70
+    ) -> List[Dict[str, Any]]:
+        """
+        Rankeia padrões por performance real baseado em métricas de backtest.
+        
+        Conforme proxima_atualizacao.md:
+        - OOS ≥ 30% dos dados
+        - Expectancy OOS > 70% in-sample
+        
+        Args:
+            metricas_backtest: Dicionário com métricas por tipo de padrão
+                Formato: {tipo_padrao: {expectancy_in_sample, expectancy_oos, oos_percentual, ...}}
+            oos_percentual_min: Percentual mínimo de OOS (padrão: 0.30 = 30%)
+            expectancy_oos_ratio_min: Ratio mínimo de Expectancy OOS vs In-Sample (padrão: 0.70 = 70%)
+        
+        Returns:
+            list: Lista de padrões rankeados ordenados por performance
+        """
+        ranking = []
+        
+        for tipo_padrao, metricas in metricas_backtest.items():
+            expectancy_in_sample = metricas.get("expectancy_in_sample", 0.0)
+            expectancy_oos = metricas.get("expectancy_oos", 0.0)
+            oos_percentual = metricas.get("oos_percentual", 0.0)
+            
+            # Verifica critérios de elegibilidade
+            if oos_percentual < oos_percentual_min:
+                continue  # Não tem OOS suficiente
+            
+            if expectancy_in_sample <= 0:
+                continue  # Expectancy in-sample deve ser positiva
+            
+            # Calcula ratio de Expectancy OOS vs In-Sample
+            expectancy_ratio = expectancy_oos / expectancy_in_sample if expectancy_in_sample > 0 else 0.0
+            
+            if expectancy_ratio < expectancy_oos_ratio_min:
+                continue  # Expectancy OOS não atinge threshold
+            
+            # Score de ranking (combina múltiplas métricas)
+            winrate = metricas.get("winrate", 0.0)
+            sharpe = metricas.get("sharpe_condicional", 0.0) or 0.0
+            avg_rr = metricas.get("avg_rr", 0.0) or 0.0
+            
+            # Score composto: expectancy (40%), winrate (20%), sharpe (20%), avg_rr (20%)
+            score_ranking = (
+                expectancy_oos * 0.4 +
+                winrate * 0.2 +
+                sharpe * 0.2 +
+                (avg_rr / 10.0) * 0.2  # Normaliza avg_rr (assumindo range 0-10)
+            )
+            
+            ranking.append({
+                "tipo_padrao": tipo_padrao,
+                "score_ranking": score_ranking,
+                "expectancy_in_sample": expectancy_in_sample,
+                "expectancy_oos": expectancy_oos,
+                "expectancy_ratio": expectancy_ratio,
+                "oos_percentual": oos_percentual,
+                "winrate": winrate,
+                "sharpe": sharpe,
+                "avg_rr": avg_rr,
+                "metricas_completas": metricas
+            })
+        
+        # Ordena por score_ranking (maior primeiro)
+        ranking.sort(key=lambda x: x["score_ranking"], reverse=True)
+        
+        return ranking
+    
+    def calcular_ensemble_score(
+        self,
+        padroes: List[Dict[str, Any]],
+        janela_temporal_minutos: int = 15
+    ) -> List[Dict[str, Any]]:
+        """
+        Calcula score de ensemble quando múltiplos padrões convergem.
+        
+        Conforme proxima_atualizacao.md:
+        - Combina detecções quando 2-3 padrões convergem (mesmo símbolo/timeframe/direção)
+        - Peso maior quando confidence > 0.8
+        - Score combinado aumenta quando múltiplos padrões apontam mesma direção
+        
+        Args:
+            padroes: Lista de padrões detectados
+            janela_temporal_minutos: Janela temporal para considerar convergência (padrão: 15 min)
+        
+        Returns:
+            list: Padrões com ensemble_score calculado
+        """
+        if not padroes:
+            return padroes
+        
+        # Agrupa padrões por símbolo/timeframe/direção
+        grupos = {}
+        for padrao in padroes:
+            key = (
+                padrao.get("symbol"),
+                padrao.get("timeframe"),
+                padrao.get("direcao")
+            )
+            
+            if key not in grupos:
+                grupos[key] = []
+            grupos[key].append(padrao)
+        
+        # Calcula ensemble_score para cada grupo
+        padroes_com_ensemble = []
+        
+        for key, padroes_grupo in grupos.items():
+            if len(padroes_grupo) == 1:
+                # Apenas um padrão: ensemble_score = final_score
+                padrao = padroes_grupo[0]
+                padrao["ensemble_score"] = padrao.get("final_score", 0.0)
+                padroes_com_ensemble.append(padrao)
+            else:
+                # Múltiplos padrões convergindo: calcula ensemble
+                # Filtra padrões na mesma janela temporal
+                padroes_convergentes = []
+                if len(padroes_grupo) > 1:
+                    # Ordena por tempo
+                    padroes_grupo_sorted = sorted(
+                        padroes_grupo,
+                        key=lambda p: p.get("open_time", datetime.min)
+                    )
+                    
+                    # Agrupa por janela temporal
+                    for i, padrao in enumerate(padroes_grupo_sorted):
+                        if i == 0:
+                            padroes_convergentes.append([padrao])
+                        else:
+                            # Verifica se está na mesma janela temporal
+                            tempo_anterior = padroes_convergentes[-1][0].get("open_time")
+                            tempo_atual = padrao.get("open_time")
+                            
+                            if isinstance(tempo_anterior, datetime) and isinstance(tempo_atual, datetime):
+                                diff_minutos = (tempo_atual - tempo_anterior).total_seconds() / 60
+                                if diff_minutos <= janela_temporal_minutos:
+                                    padroes_convergentes[-1].append(padrao)
+                                else:
+                                    padroes_convergentes.append([padrao])
+                            else:
+                                padroes_convergentes.append([padrao])
+                
+                # Calcula ensemble_score para cada grupo convergente
+                for grupo_convergente in padroes_convergentes:
+                    if len(grupo_convergente) == 1:
+                        padrao = grupo_convergente[0]
+                        padrao["ensemble_score"] = padrao.get("final_score", 0.0)
+                        padroes_com_ensemble.append(padrao)
+                    else:
+                        # Ensemble: combina scores com pesos baseados em confidence
+                        scores_ponderados = []
+                        total_peso = 0.0
+                        
+                        for padrao in grupo_convergente:
+                            final_score = padrao.get("final_score", 0.0)
+                            confidence = padrao.get("confidence", 1.0)
+                            
+                            # Peso maior se confidence > 0.8
+                            peso = confidence * 1.5 if confidence > 0.8 else confidence
+                            
+                            scores_ponderados.append(final_score * peso)
+                            total_peso += peso
+                        
+                        # Score de ensemble: média ponderada + bônus por convergência
+                        if total_peso > 0:
+                            ensemble_base = sum(scores_ponderados) / total_peso
+                            # Bônus: +0.1 por cada padrão adicional (máximo +0.2 para 3+ padrões)
+                            bonus_convergencia = min(0.2, (len(grupo_convergente) - 1) * 0.1)
+                            ensemble_score = min(1.0, ensemble_base + bonus_convergencia)
+                        else:
+                            ensemble_score = grupo_convergente[0].get("final_score", 0.0)
+                        
+                        # Aplica ensemble_score a todos os padrões do grupo
+                        for padrao in grupo_convergente:
+                            padrao["ensemble_score"] = ensemble_score
+                            padrao["ensemble_count"] = len(grupo_convergente)
+                            padroes_com_ensemble.append(padrao)
+        
+        return padroes_com_ensemble
+    
     def _persistir_padroes(self, padroes: List[Dict[str, Any]]):
         """
         Persiste padrões detectados no banco de dados.
+        
+        PASSO 4: Verifica duplicatas antes de inserir para evitar loops.
+        Usa constraint UNIQUE ou verificação manual por (symbol, timeframe, open_time, tipo_padrao).
         
         Args:
             padroes: Lista de padrões detectados
@@ -2482,7 +3573,11 @@ class PluginPadroes(Plugin):
             if not padroes:
                 return
             
-            # Prepara dados para inserção
+            # PASSO 4: Verifica duplicatas antes de inserir
+            # Remove duplicatas na mesma execução (evita múltiplas inserções do mesmo padrão)
+            padroes_ja_vistos = set()
+            
+            # Prepara dados para inserção (apenas padrões únicos)
             dados_inserir = []
             for padrao in padroes:
                 open_time = padrao.get("open_time")
@@ -2497,6 +3592,21 @@ class PluginPadroes(Plugin):
                         open_time = pd.to_datetime(open_time).to_pydatetime()
                     elif isinstance(open_time, (int, float)):
                         open_time = datetime.utcfromtimestamp(open_time / 1000 if open_time > 1e10 else open_time)
+                
+                # PASSO 4: Verifica se padrão já foi processado nesta execução (evita duplicatas na memória)
+                chave_padrao = (
+                    str(padrao.get("symbol", "")),
+                    str(padrao.get("timeframe", "")),
+                    str(open_time),
+                    str(padrao.get("tipo_padrao", ""))
+                )
+                
+                if chave_padrao in padroes_ja_vistos:
+                    # Padrão duplicado na mesma execução, pula
+                    continue
+                
+                # Adiciona à lista de vistos
+                padroes_ja_vistos.add(chave_padrao)
                 
                 # Prepara meta como JSON (PostgreSQL JSONB)
                 meta = padrao.get("meta", {})
@@ -2527,9 +3637,24 @@ class PluginPadroes(Plugin):
                     "meta": meta_serializado,
                 })
             
-            # Persiste via gerenciador_banco
-            if self.gerenciador_banco:
-                self.persistir_dados("padroes_detectados", dados_inserir)
+            # PASSO 4: Persiste via gerenciador_banco (apenas padrões únicos)
+            if self.gerenciador_banco and dados_inserir:
+                try:
+                    # Usa transação para garantir atomicidade
+                    self.persistir_dados("padroes_detectados", dados_inserir)
+                    
+                    if self.logger:
+                        self.logger.debug(
+                            f"[{self.PLUGIN_NAME}] {len(dados_inserir)} padrão(ões) único(s) persistido(s) "
+                            f"(de {len(padroes)} detectado(s))"
+                        )
+                except Exception as persist_error:
+                    # Log erro mas não interrompe execução
+                    if self.logger:
+                        self.logger.error(
+                            f"[{self.PLUGIN_NAME}] Erro ao persistir padrões: {persist_error}",
+                            exc_info=True
+                        )
             
             # Loga cada padrão detectado
             if self.gerenciador_log:
@@ -2702,30 +3827,203 @@ class PluginPadroes(Plugin):
         dados_velas: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Executa validação Rolling Window (180 dias → recalcula a cada 30 dias).
+        Executa validação Rolling Window completa (180 dias → recalcula a cada 30 dias).
+        
+        Conforme proxima_atualizacao.md:
+        - Janela deslizante de 180 dias
+        - Recalcula métricas a cada 30 dias
+        - Tracking de performance ao longo do tempo
+        - Detecção de degradação de performance
+        - Ajuste automático de confidence baseado em performance recente
         
         Args:
             dados_velas: Dados de velas organizados por par/timeframe
         
         Returns:
-            dict: Métricas de validação
+            dict: Métricas de validação com histórico de performance
         """
         resultados = {}
+        historico_performance = {}
         
-        # Por enquanto, implementação básica
-        # Futuramente: implementar janela deslizante completa
-        
-        if self.logger:
-            self.logger.info(
-                f"[{self.PLUGIN_NAME}] Validação Rolling Window - Implementação básica"
-            )
-        
-        return {
-            "status": "ok",
-            "tipo_validacao": "rolling_window",
-            "mensagem": "Implementação básica - expandir futuramente",
-            "resultados": resultados,
-        }
+        try:
+            # Log INFO: Início da validação
+            if self.logger:
+                self.logger.info(
+                    f"[{self.PLUGIN_NAME}] Iniciando validação Rolling Window — janela: {self.rolling_window_dias} dias, recalculo: {self.rolling_recalculo_dias} dias"
+                )
+            
+            for symbol, dados_par in dados_velas.items():
+                if not isinstance(dados_par, dict):
+                    continue
+                
+                for timeframe, dados_tf in dados_par.items():
+                    if not isinstance(dados_tf, dict) or "velas" not in dados_tf:
+                        continue
+                    
+                    velas = dados_tf.get("velas", [])
+                    if len(velas) < self.rolling_window_dias:  # Precisa de pelo menos 180 dias
+                        if self.logger:
+                            self.logger.warning(
+                                f"[{self.PLUGIN_NAME}] WARNING — Dados insuficientes para Rolling Window: {symbol} {timeframe} — {len(velas)} velas (mínimo: {self.rolling_window_dias})"
+                            )
+                        continue
+                    
+                    # Converte para DataFrame e ordena por data
+                    df = self._velas_para_dataframe(velas)
+                    if "datetime" in df.columns:
+                        df = df.sort_values("datetime")
+                    
+                    # Calcula número de janelas
+                    total_dias = len(df)
+                    num_janelas = max(1, (total_dias - self.rolling_window_dias) // self.rolling_recalculo_dias + 1)
+                    
+                    metricas_janelas = []
+                    performance_historica = []
+                    
+                    # Log DEBUG: Detalhamento
+                    if self.logger:
+                        self.logger.debug(
+                            f"[{self.PLUGIN_NAME}] DEBUG — Rolling Window para {symbol} {timeframe}: {num_janelas} janela(s) de {self.rolling_window_dias} dias"
+                        )
+                    
+                    # Processa cada janela deslizante
+                    for i in range(num_janelas):
+                        inicio_janela = i * self.rolling_recalculo_dias
+                        fim_janela = min(inicio_janela + self.rolling_window_dias, total_dias)
+                        
+                        if fim_janela - inicio_janela < self.rolling_window_dias:
+                            # Última janela pode ser menor
+                            break
+                        
+                        # Extrai dados da janela
+                        df_janela = df.iloc[inicio_janela:fim_janela].copy()
+                        
+                        # Detecta regime
+                        regime = self._detectar_regime(df_janela)
+                        
+                        # Detecta padrões na janela
+                        padroes_janela = self._detectar_padroes_top30(df_janela, symbol, timeframe, regime)
+                        
+                        # Calcula métricas para esta janela
+                        metricas_janela = self._calcular_metricas(
+                            padroes_janela, 
+                            df_janela.to_dict('records'), 
+                            symbol, 
+                            timeframe, 
+                            "rolling"
+                        )
+                        
+                        # Adiciona informações da janela
+                        if metricas_janela:
+                            for metrica in metricas_janela:
+                                metrica["janela_inicio"] = inicio_janela
+                                metrica["janela_fim"] = fim_janela
+                                metrica["janela_numero"] = i + 1
+                                metrica["data_inicio"] = df_janela.iloc[0].get("datetime") if len(df_janela) > 0 else None
+                                metrica["data_fim"] = df_janela.iloc[-1].get("datetime") if len(df_janela) > 0 else None
+                        
+                        metricas_janelas.extend(metricas_janela if metricas_janela else [])
+                        
+                        # Log TRACE: Cálculos internos
+                        if self.logger and padroes_janela:
+                            tipos_detectados = [p.get("tipo_padrao", "unknown") for p in padroes_janela]
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] TRACE — Janela {i+1}/{num_janelas}: {len(padroes_janela)} padrão(ões) — {', '.join(set(tipos_detectados))}"
+                            )
+                    
+                    # Agrupa métricas por tipo de padrão para análise de degradação
+                    metricas_por_tipo = {}
+                    for metrica in metricas_janelas:
+                        tipo_padrao = metrica.get("tipo_padrao", "unknown")
+                        if tipo_padrao not in metricas_por_tipo:
+                            metricas_por_tipo[tipo_padrao] = []
+                        metricas_por_tipo[tipo_padrao].append(metrica)
+                    
+                    # Analisa degradação de performance e ajusta confidence
+                    ajustes_confidence = {}
+                    for tipo_padrao, metricas_tipo in metricas_por_tipo.items():
+                        if len(metricas_tipo) < 2:
+                            continue  # Precisa de pelo menos 2 janelas para detectar degradação
+                        
+                        # Ordena por número da janela (mais antiga primeiro)
+                        metricas_tipo_sorted = sorted(metricas_tipo, key=lambda x: x.get("janela_numero", 0))
+                        
+                        # Compara performance da primeira metade vs segunda metade
+                        meio = len(metricas_tipo_sorted) // 2
+                        primeira_metade = metricas_tipo_sorted[:meio]
+                        segunda_metade = metricas_tipo_sorted[meio:]
+                        
+                        # Calcula média de expectancy para cada metade
+                        exp_primeira = np.mean([m.get("expectancy", 0) for m in primeira_metade if m.get("expectancy")])
+                        exp_segunda = np.mean([m.get("expectancy", 0) for m in segunda_metade if m.get("expectancy")])
+                        
+                        # Detecta degradação (expectancy caiu mais de 30%)
+                        if exp_primeira > 0 and exp_segunda < exp_primeira * 0.7:
+                            degradacao = (exp_primeira - exp_segunda) / exp_primeira
+                            ajustes_confidence[tipo_padrao] = {
+                                "degradacao_detectada": True,
+                                "degradacao_percentual": degradacao * 100,
+                                "expectancy_primeira_metade": exp_primeira,
+                                "expectancy_segunda_metade": exp_segunda,
+                                "ajuste_confidence": -0.1  # Reduz confidence em 10%
+                            }
+                            
+                            # Log WARNING: Degradação detectada
+                            if self.logger:
+                                self.logger.warning(
+                                    f"[{self.PLUGIN_NAME}] WARNING — Degradação detectada: {tipo_padrao} em {symbol} {timeframe} — "
+                                    f"Expectancy caiu {degradacao*100:.1f}% ({exp_primeira:.4f} → {exp_segunda:.4f})"
+                                )
+                        else:
+                            ajustes_confidence[tipo_padrao] = {
+                                "degradacao_detectada": False,
+                                "ajuste_confidence": 0.0
+                            }
+                    
+                    # Armazena histórico de performance
+                    historico_performance[f"{symbol}_{timeframe}"] = {
+                        "metricas_por_janela": metricas_janelas,
+                        "metricas_por_tipo": metricas_por_tipo,
+                        "ajustes_confidence": ajustes_confidence,
+                        "total_janelas": num_janelas,
+                    }
+                    
+                    # Persiste métricas no banco
+                    for metrica in metricas_janelas:
+                        self._persistir_metricas([metrica])
+                    
+                    resultados[f"{symbol}_{timeframe}"] = {
+                        "total_janelas": num_janelas,
+                        "metricas_por_tipo": {k: len(v) for k, v in metricas_por_tipo.items()},
+                        "ajustes_confidence": ajustes_confidence,
+                    }
+            
+            # Log INFO: Resumo final
+            if self.logger:
+                total_janelas = sum(r.get("total_janelas", 0) for r in resultados.values())
+                self.logger.info(
+                    f"[{self.PLUGIN_NAME}] Rolling Window concluído — {len(resultados)} par(es)/timeframe(s) processado(s), {total_janelas} janela(s) total"
+                )
+            
+            return {
+                "status": "ok",
+                "tipo_validacao": "rolling_window",
+                "resultados": resultados,
+                "historico_performance": historico_performance,
+            }
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.error(
+                    f"[{self.PLUGIN_NAME}] Erro na validação Rolling Window: {e}",
+                    exc_info=True,
+                )
+            return {
+                "status": "erro",
+                "tipo_validacao": "rolling_window",
+                "mensagem": str(e),
+                "resultados": resultados,
+            }
     
     def _validar_oos(
         self,

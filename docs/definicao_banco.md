@@ -537,17 +537,249 @@ CREATE TABLE padroes_confidence (
 
 ---
 
-## Próximas Tabelas (Futuro)
+## Tabelas de Indicadores Técnicos (v1.4.0)
 
-### Indicadores Técnicos
+### Tabela: `indicadores_ichimoku`
 
-- `ichimoku`: Dados do Ichimoku Cloud
-- `supertrend`: Dados do Supertrend
-- `bollinger`: Dados das Bollinger Bands
-- `ema`: Dados de EMA Crossover
-- `macd`: Dados do MACD
-- `rsi`: Dados do RSI
-- `vwap`: Dados do VWAP
+Armazena dados do indicador Ichimoku Cloud.
+
+```sql
+CREATE TABLE indicadores_ichimoku (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(20) DEFAULT 'bybit',
+    ativo VARCHAR(20) NOT NULL,
+    timeframe VARCHAR(5) NOT NULL,
+    open_time TIMESTAMP NOT NULL,
+    preco NUMERIC(20,8) NOT NULL,
+    senkou_a NUMERIC(20,8),
+    senkou_b NUMERIC(20,8),
+    tenkan NUMERIC(20,8),
+    kijun NUMERIC(20,8),
+    chikou NUMERIC(20,8),
+    long BOOLEAN DEFAULT FALSE,
+    short BOOLEAN DEFAULT FALSE,
+    testnet BOOLEAN DEFAULT FALSE,
+    criado_em TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_ichimoku UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+);
+```
+
+**Índices:**
+- `idx_ichimoku_lookup`: (ativo, timeframe, open_time) - Consultas rápidas por par
+
+### Tabela: `indicadores_supertrend`
+
+Armazena dados do indicador Supertrend.
+
+```sql
+CREATE TABLE indicadores_supertrend (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(20) DEFAULT 'bybit',
+    ativo VARCHAR(20) NOT NULL,
+    timeframe VARCHAR(5) NOT NULL,
+    open_time TIMESTAMP NOT NULL,
+    preco NUMERIC(20,8) NOT NULL,
+    supertrend_value NUMERIC(20,8),
+    direcao VARCHAR(10),  -- 'LONG', 'SHORT'
+    long BOOLEAN DEFAULT FALSE,
+    short BOOLEAN DEFAULT FALSE,
+    testnet BOOLEAN DEFAULT FALSE,
+    criado_em TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_supertrend UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+);
+```
+
+**Índices:**
+- `idx_supertrend_lookup`: (ativo, timeframe, open_time) - Consultas rápidas por par
+
+### Tabela: `indicadores_bollinger`
+
+Armazena dados do indicador Bollinger Bands.
+
+```sql
+CREATE TABLE indicadores_bollinger (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(20) DEFAULT 'bybit',
+    ativo VARCHAR(20) NOT NULL,
+    timeframe VARCHAR(5) NOT NULL,
+    open_time TIMESTAMP NOT NULL,
+    preco NUMERIC(20,8) NOT NULL,
+    upper_band NUMERIC(20,8),
+    middle_band NUMERIC(20,8),
+    lower_band NUMERIC(20,8),
+    bb_width NUMERIC(20,8),
+    squeeze BOOLEAN DEFAULT FALSE,
+    long BOOLEAN DEFAULT FALSE,
+    short BOOLEAN DEFAULT FALSE,
+    testnet BOOLEAN DEFAULT FALSE,
+    criado_em TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_bollinger UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+);
+```
+
+**Índices:**
+- `idx_bollinger_lookup`: (ativo, timeframe, open_time) - Consultas rápidas por par
+
+### Tabela: `indicadores_volume`
+
+Armazena dados do indicador Volume.
+
+```sql
+CREATE TABLE indicadores_volume (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(20) DEFAULT 'bybit',
+    ativo VARCHAR(20) NOT NULL,
+    timeframe VARCHAR(5) NOT NULL,
+    open_time TIMESTAMP NOT NULL,
+    volume NUMERIC(20,8) NOT NULL,
+    volume_medio NUMERIC(20,8),
+    volume_ratio NUMERIC(10,4),
+    breakout BOOLEAN DEFAULT FALSE,
+    long BOOLEAN DEFAULT FALSE,
+    short BOOLEAN DEFAULT FALSE,
+    testnet BOOLEAN DEFAULT FALSE,
+    criado_em TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_volume UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+);
+```
+
+**Índices:**
+- `idx_volume_lookup`: (ativo, timeframe, open_time) - Consultas rápidas por par
+
+### Tabela: `indicadores_ema`
+
+Armazena dados do indicador EMA Crossover.
+
+```sql
+CREATE TABLE indicadores_ema (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(20) DEFAULT 'bybit',
+    ativo VARCHAR(20) NOT NULL,
+    timeframe VARCHAR(5) NOT NULL,
+    open_time TIMESTAMP NOT NULL,
+    preco NUMERIC(20,8) NOT NULL,
+    ema_rapida NUMERIC(20,8),
+    ema_lenta NUMERIC(20,8),
+    crossover BOOLEAN DEFAULT FALSE,
+    long BOOLEAN DEFAULT FALSE,
+    short BOOLEAN DEFAULT FALSE,
+    testnet BOOLEAN DEFAULT FALSE,
+    criado_em TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_ema UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+);
+```
+
+**Índices:**
+- `idx_ema_lookup`: (ativo, timeframe, open_time) - Consultas rápidas por par
+
+### Tabela: `indicadores_macd`
+
+Armazena dados do indicador MACD.
+
+```sql
+CREATE TABLE indicadores_macd (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(20) DEFAULT 'bybit',
+    ativo VARCHAR(20) NOT NULL,
+    timeframe VARCHAR(5) NOT NULL,
+    open_time TIMESTAMP NOT NULL,
+    preco NUMERIC(20,8) NOT NULL,
+    macd_line NUMERIC(20,8),
+    signal_line NUMERIC(20,8),
+    histogram NUMERIC(20,8),
+    long BOOLEAN DEFAULT FALSE,
+    short BOOLEAN DEFAULT FALSE,
+    testnet BOOLEAN DEFAULT FALSE,
+    criado_em TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_macd UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+);
+```
+
+**Índices:**
+- `idx_macd_lookup`: (ativo, timeframe, open_time) - Consultas rápidas por par
+
+### Tabela: `indicadores_rsi`
+
+Armazena dados do indicador RSI.
+
+```sql
+CREATE TABLE indicadores_rsi (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(20) DEFAULT 'bybit',
+    ativo VARCHAR(20) NOT NULL,
+    timeframe VARCHAR(5) NOT NULL,
+    open_time TIMESTAMP NOT NULL,
+    preco NUMERIC(20,8) NOT NULL,
+    rsi NUMERIC(5,2),
+    long BOOLEAN DEFAULT FALSE,
+    short BOOLEAN DEFAULT FALSE,
+    testnet BOOLEAN DEFAULT FALSE,
+    criado_em TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_rsi UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+);
+```
+
+**Índices:**
+- `idx_rsi_lookup`: (ativo, timeframe, open_time) - Consultas rápidas por par
+
+### Tabela: `indicadores_vwap`
+
+Armazena dados do indicador VWAP.
+
+```sql
+CREATE TABLE indicadores_vwap (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(20) DEFAULT 'bybit',
+    ativo VARCHAR(20) NOT NULL,
+    timeframe VARCHAR(5) NOT NULL,
+    open_time TIMESTAMP NOT NULL,
+    preco NUMERIC(20,8) NOT NULL,
+    vwap NUMERIC(20,8),
+    distancia_percentual NUMERIC(10,4),
+    long BOOLEAN DEFAULT FALSE,
+    short BOOLEAN DEFAULT FALSE,
+    testnet BOOLEAN DEFAULT FALSE,
+    criado_em TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_vwap UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+);
+```
+
+**Índices:**
+- `idx_vwap_lookup`: (ativo, timeframe, open_time) - Consultas rápidas por par
+
+### Tabela: `pares_filtro_dinamico`
+
+Armazena dados do Filtro Dinâmico para rastreamento de pares.
+
+```sql
+CREATE TABLE pares_filtro_dinamico (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(20) DEFAULT 'bybit',
+    ativo VARCHAR(20) NOT NULL,
+    volume_24h NUMERIC(20,8),
+    mediana_volume_24h NUMERIC(20,8),
+    idade_dias INTEGER,
+    volume_medio_15m NUMERIC(20,8),
+    volume_medio_1h NUMERIC(20,8),
+    fail_rate NUMERIC(5,4),
+    ciclos_bloqueio INTEGER DEFAULT 0,
+    aprovado BOOLEAN DEFAULT FALSE,
+    motivo_rejeicao TEXT,
+    testnet BOOLEAN DEFAULT FALSE,
+    criado_em TIMESTAMP DEFAULT NOW(),
+    atualizado_em TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT unique_par_filtro UNIQUE (exchange, ativo, testnet)
+);
+```
+
+**Índices:**
+- `idx_filtro_ativo`: (ativo, testnet) - Consultas por par
+- `idx_filtro_aprovado`: (aprovado, testnet) - Filtros de pares aprovados
+
+**Uso:**
+- Rastreia histórico de filtragem de pares
+- Permite análise de quais pares foram rejeitados e por quê
+- Facilita ajuste de parâmetros do filtro
 
 ### Padrões e Análises
 
@@ -660,8 +892,36 @@ psycopg2.errors.UniqueViolation: duplicate key value violates unique constraint
 
 ---
 
-**Última Atualização**: 08/11/2025  
-**Versão**: v1.3.0
+**Última Atualização**: 15/11/2025  
+**Versão**: v1.4.0
+
+### Changelog v1.4.0 (15/11/2025)
+
+#### Sistema de Armazenamento de Indicadores Técnicos
+- ✅ Tabelas de indicadores criadas - 8 tabelas para armazenar dados dos indicadores técnicos
+  - `indicadores_ichimoku`: Dados do Ichimoku Cloud
+  - `indicadores_supertrend`: Dados do Supertrend
+  - `indicadores_bollinger`: Dados das Bollinger Bands
+  - `indicadores_volume`: Dados do Volume
+  - `indicadores_ema`: Dados de EMA Crossover
+  - `indicadores_macd`: Dados do MACD
+  - `indicadores_rsi`: Dados do RSI
+  - `indicadores_vwap`: Dados do VWAP
+- ✅ Tabela `pares_filtro_dinamico` criada - Rastreamento do Filtro Dinâmico
+- ✅ Índices otimizados para consultas rápidas por par e timeframe
+- ✅ Constraints de unicidade para evitar duplicatas
+- ✅ Suporte a testnet/mainnet em todas as tabelas
+
+#### Filtro Dinâmico do SmartTrader
+- ✅ Sistema de seleção inteligente de pares implementado
+- ✅ 4 camadas de filtro:
+  1. Liquidez Diária Real (Mediana de Volume 24h)
+  2. Maturidade do Par (Idade Mínima >= 60 dias)
+  3. Atividade Recente (Velas Vivas - volume médio 15m e 1h > 0)
+  4. Integridade Técnica (Confiança na Coleta - timeframes vazios, fail_rate < 30%)
+- ✅ Rastreamento de histórico de falhas por par
+- ✅ Bloqueio automático de pares problemáticos
+- ✅ Integração completa com PluginDadosVelas
 
 ### Changelog v1.3.0 (08/11/2025)
 

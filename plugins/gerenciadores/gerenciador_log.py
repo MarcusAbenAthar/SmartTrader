@@ -28,6 +28,24 @@ import pytz
 
 # Importa funcionalidades avançadas de log (cores, TRACE)
 from utils.log_helper import SmartFormatter, TRACE_LEVEL
+from enum import Enum
+
+
+class CategoriaLog(Enum):
+    """
+    Categorias de log baseadas em responsabilidade funcional.
+    
+    Separação por responsabilidade, não por nível, para rastreabilidade real.
+    """
+    CORE = "CORE"           # Núcleo do sistema (ciclos, inicialização, versão)
+    CONEXAO = "CONEXAO"     # Ligação com exchange (latency, timeouts, rate-limit)
+    BANCO = "BANCO"          # Operações de banco (inserts, selects, transações)
+    PLUGIN = "PLUGIN"        # Execução de plugins (início, dados, resultados)
+    ANALISE = "ANALISE"      # Processamento de dados (cálculos, validações)
+    SINAL = "SINAL"          # Sinais de trading (LONG, SHORT, força, timeframe)
+    FILTRO = "FILTRO"        # Filtro dinâmico (pares aprovados, rejeições)
+    IA = "IA"                # Inteligência artificial (decisões, pesos, validações)
+    UTIL = "UTIL"            # Utilitários e helpers (conversores, checagens)
 
 
 class GerenciadorLog:
@@ -71,8 +89,12 @@ class GerenciadorLog:
         self.timezone_sp = pytz.timezone('America/Sao_Paulo')
         
         # Formato com timezone de São Paulo, milissegundos e informações de rastreamento
+        # Suporta categoria opcional: [CATEGORIA] será adicionado quando especificado
         self.formato_padrao = (
             "[%(asctime)s.%(msecs)03d BRT] [%(name)s] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s"
+        )
+        self.formato_com_categoria = (
+            "[%(asctime)s.%(msecs)03d BRT] [%(name)s] [%(levelname)s] [%(filename)s:%(lineno)d] [%(categoria)s] %(message)s"
         )
         self.data_format = "%Y-%m-%d %H:%M:%S"
         
@@ -183,9 +205,10 @@ class GerenciadorLog:
         
         # Formatter customizado com timezone de São Paulo e milissegundos
         class SPFormatter(logging.Formatter):
-            def __init__(self, fmt=None, datefmt=None, timezone_sp=None):
+            def __init__(self, fmt=None, datefmt=None, timezone_sp=None, suporta_categoria=False):
                 super().__init__(fmt, datefmt)
                 self.timezone_sp = timezone_sp
+                self.suporta_categoria = suporta_categoria
             
             def formatTime(self, record, datefmt=None):
                 # Converte para timezone de São Paulo
@@ -196,9 +219,66 @@ class GerenciadorLog:
                 else:
                     s = dt_sp.strftime(self.default_time_format)
                 return s
+            
+            def format(self, record):
+                # Verifica se a mensagem começa com [CATEGORIA] (ex: [CORE], [FILTRO])
+                # Se sim, substitui o nível de log pela categoria
+                # Estratégia: lê mensagem original ANTES de formatar
+                mensagem_original = None
+                try:
+                    # Obtém mensagem original do record ANTES de formatar
+                    if hasattr(record, 'msg'):
+                        if isinstance(record.msg, str):
+                            mensagem_original = record.msg
+                        elif record.args:
+                            # Se há args, a mensagem será formatada - precisamos processar depois
+                            mensagem_original = None
+                        else:
+                            mensagem_original = str(record.msg)
+                except:
+                    pass
+                
+                # Se não conseguiu, tenta getMessage() mas isso pode já ter processado
+                if not mensagem_original:
+                    try:
+                        mensagem_original = record.getMessage()
+                    except:
+                        mensagem_original = None
+                
+                categoria_extraida = None
+                
+                # Primeiro, verifica se a categoria foi armazenada diretamente no record
+                if hasattr(record, '_categoria_log') and record._categoria_log:
+                    categoria_extraida = record._categoria_log
+                    # Remove categoria da mensagem se estiver presente
+                    if mensagem_original and isinstance(mensagem_original, str) and mensagem_original.startswith(f"[{categoria_extraida}]"):
+                        mensagem_sem_categoria = mensagem_original[len(f"[{categoria_extraida}]"):].strip()
+                        record.msg = mensagem_sem_categoria
+                        record.args = ()
+                # Se não encontrou, tenta extrair da mensagem
+                elif mensagem_original and isinstance(mensagem_original, str) and mensagem_original.startswith("[") and "]" in mensagem_original:
+                    fim_categoria = mensagem_original.find("]")
+                    if fim_categoria > 0:
+                        categoria_extraida = mensagem_original[1:fim_categoria]
+                        # Remove categoria da mensagem para não aparecer duplicada
+                        mensagem_sem_categoria = mensagem_original[fim_categoria + 1:].strip()
+                        record.msg = mensagem_sem_categoria
+                        record.args = ()
+                
+                # Formata normalmente
+                msg_formatada = super().format(record)
+                
+                # Se encontrou categoria, substitui [LEVEL] por [CATEGORIA] na mensagem formatada
+                if categoria_extraida:
+                    level = record.levelname
+                    # Substitui [LEVEL] por [CATEGORIA] no formato (apenas primeira ocorrência)
+                    if f"[{level}]" in msg_formatada:
+                        msg_formatada = msg_formatada.replace(f"[{level}]", f"[{categoria_extraida}]", 1)
+                
+                return msg_formatada
         
         file_formatter = SPFormatter(
-            self.formato_padrao, datefmt=self.data_format, timezone_sp=self.timezone_sp
+            self.formato_padrao, datefmt=self.data_format, timezone_sp=self.timezone_sp, suporta_categoria=True
         )
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
@@ -222,9 +302,9 @@ class GerenciadorLog:
         # Adiciona ao cache
         self.loggers[cache_key] = logger
         
-        # Testa escrita no arquivo para garantir que funciona
+        # Testa escrita no arquivo para garantir que funciona (DEBUG para não poluir inicialização)
         try:
-            logger.info(f"[{nome}] Logger inicializado para tipo '{tipo_log}' -> {arquivo_log.name}")
+            logger.debug(f"[{nome}] Logger inicializado para tipo '{tipo_log}' -> {arquivo_log.name}")
             # Força flush imediato
             for handler in logger.handlers:
                 if hasattr(handler, 'flush'):
@@ -323,6 +403,69 @@ class GerenciadorLog:
             logger.critical(f"[{tipo_evento}] {mensagem_completa}")
         else:
             logger.info(f"[{tipo_evento}] {mensagem_completa}")
+        
+        # Força flush para garantir que o log seja escrito imediatamente
+        for handler in logger.handlers:
+            if hasattr(handler, 'flush'):
+                handler.flush()
+    
+    def log_categoria(
+        self,
+        categoria: CategoriaLog,
+        nome_origem: str,
+        mensagem: str,
+        nivel: int = logging.INFO,
+        tipo_log: str = "system",
+        detalhes: Optional[Dict[str, Any]] = None,
+        plugin_nome: Optional[str] = None,
+    ):
+        """
+        Registra um log com categoria funcional.
+        
+        Método principal para logging por responsabilidade funcional.
+        A categoria aparece como [CATEGORIA] no início da mensagem.
+        
+        Args:
+            categoria: Categoria funcional (CORE, CONEXAO, BANCO, PLUGIN, etc.)
+            nome_origem: Nome do módulo/plugin/componente
+            mensagem: Mensagem do log
+            nivel: Nível de log (INFO, DEBUG, WARNING, ERROR, CRITICAL)
+            tipo_log: Tipo de log (system, banco, sinais, etc.) - mantém compatibilidade
+            detalhes: Dicionário com dados adicionais (opcional)
+            plugin_nome: Nome do plugin (para categoria PLUGIN, ex: "PluginSupertrend")
+        """
+        logger = self.get_logger(nome_origem, tipo_log, nivel)
+        
+        # Monta mensagem com categoria
+        categoria_str = categoria.value
+        if categoria == CategoriaLog.PLUGIN and plugin_nome:
+            categoria_str = f"PLUGIN:{plugin_nome}"
+        
+        mensagem_com_categoria = f"[{categoria_str}] {mensagem}"
+        
+        # Adiciona detalhes se fornecidos
+        if detalhes:
+            detalhes_str = ", ".join([f"{k}: {v}" for k, v in detalhes.items()])
+            mensagem_com_categoria += f" | Detalhes: {detalhes_str}"
+        
+        # Cria um LogRecord customizado com a categoria armazenada
+        # Isso garante que o formatter possa detectar a categoria
+        import logging
+        frame = inspect.currentframe().f_back
+        record = logging.LogRecord(
+            name=logger.name,
+            level=nivel,
+            pathname=frame.f_code.co_filename if frame else "",
+            lineno=frame.f_lineno if frame else 0,
+            msg=mensagem_com_categoria,
+            args=(),
+            exc_info=None
+        )
+        # Armazena categoria no record para o formatter detectar
+        record._categoria_log = categoria_str
+        
+        # Log conforme nível usando handle() para garantir que o formatter seja chamado
+        logger.handle(record)
         
         # Força flush para garantir que o log seja escrito imediatamente
         for handler in logger.handlers:
@@ -537,7 +680,7 @@ class GerenciadorLog:
         
         self.log_evento(
             tipo_log="ia",
-            nome_origem="PluginIaLlama",
+                        nome_origem="PluginIA",
             tipo_evento="analise_ia",
             mensagem=mensagem,
             detalhes=detalhes,

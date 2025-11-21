@@ -45,14 +45,21 @@ class PluginEma(Plugin):
         self.lenta = config_ema.get("lenta", 21)
         
         self.plugin_dados_velas = None
+        self.plugin_banco_dados = None
+        self.testnet = self.config.get("bybit", {}).get("testnet", False)
+        self.exchange_name = "bybit"
     
     def definir_plugin_dados_velas(self, plugin_dados_velas):
         self.plugin_dados_velas = plugin_dados_velas
     
+    def definir_plugin_banco_dados(self, plugin_banco_dados):
+        """Define referência ao PluginBancoDados."""
+        self.plugin_banco_dados = plugin_banco_dados
+    
     def _inicializar_interno(self) -> bool:
         try:
             if self.logger:
-                self.logger.info(
+                self.logger.debug(
                     f"[{self.PLUGIN_NAME}] Inicializado. EMA({self.rapida}/{self.lenta})"
                 )
             return True
@@ -139,11 +146,16 @@ class PluginEma(Plugin):
                                 short = True
                         
                         resultados[symbol][timeframe] = {
+                            "preco": float(df["close"].iloc[-1]),
                             "ema_rapida": ema_rapida_atual,
                             "ema_lenta": ema_lenta_atual,
+                            "crossover": long or short,
                             "long": long,
                             "short": short,
                         }
+                        
+                        # Salva dados no banco
+                        self._salvar_dados_banco(symbol, timeframe, df, resultados[symbol][timeframe])
                         
                         if (long or short) and self.logger:
                             self.logger.debug(
@@ -190,4 +202,49 @@ class PluginEma(Plugin):
             if self.logger:
                 self.logger.error(f"[{self.PLUGIN_NAME}] Erro na execução: {e}", exc_info=True)
             return {"status": StatusExecucao.ERRO.value, "mensagem": f"Erro: {e}", "erro": str(e)}
+    
+    def _salvar_dados_banco(self, symbol: str, timeframe: str, df: pd.DataFrame, resultado: Dict[str, Any]):
+        """Salva dados do EMA no banco de dados."""
+        try:
+            if not self.plugin_banco_dados:
+                return
+            
+            if len(df) == 0:
+                return
+            
+            ultima_vela = df.iloc[-1]
+            open_time = None
+            
+            if "timestamp" in ultima_vela:
+                from datetime import datetime
+                timestamp = ultima_vela["timestamp"]
+                if isinstance(timestamp, (int, float)):
+                    open_time = datetime.fromtimestamp(timestamp / 1000)
+                elif isinstance(timestamp, datetime):
+                    open_time = timestamp
+            elif "datetime" in df.columns:
+                open_time = ultima_vela["datetime"]
+            
+            if not open_time:
+                return
+            
+            dados_ema = {
+                "exchange": self.exchange_name,
+                "ativo": symbol,
+                "timeframe": timeframe,
+                "open_time": open_time,
+                "preco": resultado.get("preco"),
+                "ema_rapida": resultado.get("ema_rapida"),
+                "ema_lenta": resultado.get("ema_lenta"),
+                "crossover": resultado.get("crossover", False),
+                "long": resultado.get("long", False),
+                "short": resultado.get("short", False),
+                "testnet": self.testnet
+            }
+            
+            self.plugin_banco_dados.inserir("indicadores_ema", [dados_ema])
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"[{self.PLUGIN_NAME}] Erro ao salvar dados no banco para {symbol} {timeframe}: {e}")
 

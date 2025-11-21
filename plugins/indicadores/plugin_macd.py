@@ -48,14 +48,21 @@ class PluginMacd(Plugin):
         self.sinal = config_macd.get("sinal", 9)
         
         self.plugin_dados_velas = None
+        self.plugin_banco_dados = None
+        self.testnet = self.config.get("bybit", {}).get("testnet", False)
+        self.exchange_name = "bybit"
     
     def definir_plugin_dados_velas(self, plugin_dados_velas):
         self.plugin_dados_velas = plugin_dados_velas
     
+    def definir_plugin_banco_dados(self, plugin_banco_dados):
+        """Define referência ao PluginBancoDados."""
+        self.plugin_banco_dados = plugin_banco_dados
+    
     def _inicializar_interno(self) -> bool:
         try:
             if self.logger:
-                self.logger.info(
+                self.logger.debug(
                     f"[{self.PLUGIN_NAME}] Inicializado. "
                     f"MACD({self.rapida},{self.lenta},{self.sinal})"
                 )
@@ -171,12 +178,16 @@ class PluginMacd(Plugin):
                                 short = True
                         
                         resultados[symbol][timeframe] = {
+                            "preco": float(df["close"].iloc[-1]),
                             "macd": macd_atual,
                             "signal": signal_atual,
                             "histogram": histogram_atual,
                             "long": long,
                             "short": short,
                         }
+                        
+                        # Salva dados no banco
+                        self._salvar_dados_banco(symbol, timeframe, df, resultados[symbol][timeframe])
                         
                         if (long or short) and self.logger:
                             self.logger.debug(
@@ -223,4 +234,49 @@ class PluginMacd(Plugin):
             if self.logger:
                 self.logger.error(f"[{self.PLUGIN_NAME}] Erro na execução: {e}", exc_info=True)
             return {"status": StatusExecucao.ERRO.value, "mensagem": f"Erro: {e}", "erro": str(e)}
+    
+    def _salvar_dados_banco(self, symbol: str, timeframe: str, df: pd.DataFrame, resultado: Dict[str, Any]):
+        """Salva dados do MACD no banco de dados."""
+        try:
+            if not self.plugin_banco_dados:
+                return
+            
+            if len(df) == 0:
+                return
+            
+            ultima_vela = df.iloc[-1]
+            open_time = None
+            
+            if "timestamp" in ultima_vela:
+                from datetime import datetime
+                timestamp = ultima_vela["timestamp"]
+                if isinstance(timestamp, (int, float)):
+                    open_time = datetime.fromtimestamp(timestamp / 1000)
+                elif isinstance(timestamp, datetime):
+                    open_time = timestamp
+            elif "datetime" in df.columns:
+                open_time = ultima_vela["datetime"]
+            
+            if not open_time:
+                return
+            
+            dados_macd = {
+                "exchange": self.exchange_name,
+                "ativo": symbol,
+                "timeframe": timeframe,
+                "open_time": open_time,
+                "preco": resultado.get("preco"),
+                "macd_line": resultado.get("macd"),
+                "signal_line": resultado.get("signal"),
+                "histogram": resultado.get("histogram"),
+                "long": resultado.get("long", False),
+                "short": resultado.get("short", False),
+                "testnet": self.testnet
+            }
+            
+            self.plugin_banco_dados.inserir("indicadores_macd", [dados_macd])
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"[{self.PLUGIN_NAME}] Erro ao salvar dados no banco para {symbol} {timeframe}: {e}")
 

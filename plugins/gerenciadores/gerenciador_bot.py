@@ -69,7 +69,7 @@ class GerenciadorBot(GerenciadorBase):
                 )
             
             if self.logger:
-                self.logger.info(
+                self.logger.debug(
                     f"[{self.GERENCIADOR_NAME}] GerenciadorBot inicializado"
                 )
             

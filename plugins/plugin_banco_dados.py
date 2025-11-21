@@ -13,9 +13,11 @@ Estrutura:
 - Retorno padronizado em dicionário para facilitar integração com IA
 """
 
+import logging
+import json
 import psycopg2
 from psycopg2 import pool, sql
-from psycopg2.extras import RealDictCursor, execute_values
+from psycopg2.extras import RealDictCursor, execute_values, Json
 from typing import Dict, Any, Optional, List, Union
 from datetime import datetime, timedelta
 from plugins.base_plugin import Plugin
@@ -62,8 +64,8 @@ class PluginBancoDados(Plugin):
     __institucional__ = "Smart_Trader Plugin Banco Dados - Sistema 6/8 Unificado"
     
     PLUGIN_NAME = "PluginBancoDados"
-    plugin_versao = "v1.3.0"
-    plugin_schema_versao = "v1.3.0"
+    plugin_versao = "v1.4.0"
+    plugin_schema_versao = "v1.4.0"
     plugin_tipo = TipoPlugin.GERENCIADOR
     
     def __init__(
@@ -127,6 +129,9 @@ class PluginBancoDados(Plugin):
         
         # Timeout de conexão (em segundos)
         self.connection_timeout = 10
+        
+        # Modo silencioso: quando True, não loga SELECTs individuais (usado durante barra de progresso)
+        self._modo_silencioso = False
     
     def _inicializar_interno(self) -> bool:
         """
@@ -260,7 +265,7 @@ class PluginBancoDados(Plugin):
                     )
                 
                 if self.logger:
-                    self.logger.info(
+                    self.logger.debug(
                         f"[{self.PLUGIN_NAME}] Pool de conexões criado com sucesso "
                         f"(host={self.db_host}, database={self.db_name})"
                     )
@@ -302,7 +307,7 @@ class PluginBancoDados(Plugin):
         try:
             # Conecta ao banco padrão 'postgres' para criar o banco
             if self.logger:
-                self.logger.info(
+                self.logger.debug(
                     f"[{self.PLUGIN_NAME}] Verificando se banco de dados '{database}' existe..."
                 )
             
@@ -343,12 +348,12 @@ class PluginBancoDados(Plugin):
                 )
                 
                 if self.logger:
-                    self.logger.info(
+                    self.logger.debug(
                         f"[{self.PLUGIN_NAME}] Banco de dados '{database}' criado com sucesso"
                     )
             else:
                 if self.logger:
-                    self.logger.info(
+                    self.logger.debug(
                         f"[{self.PLUGIN_NAME}] Banco de dados '{database}' já existe"
                     )
             
@@ -595,6 +600,262 @@ class PluginBancoDados(Plugin):
             
             CREATE INDEX IF NOT EXISTS idx_padroes_confidence_quarentena 
             ON padroes_confidence(em_quarentena);
+            
+            -- Tabelas de Indicadores Técnicos (v1.4.0)
+            -- Tabela: indicadores_ichimoku
+            CREATE TABLE IF NOT EXISTS indicadores_ichimoku (
+                id SERIAL PRIMARY KEY,
+                exchange VARCHAR(20) DEFAULT 'bybit',
+                ativo VARCHAR(20) NOT NULL,
+                timeframe VARCHAR(5) NOT NULL,
+                open_time TIMESTAMP NOT NULL,
+                preco NUMERIC(20,8) NOT NULL,
+                senkou_a NUMERIC(20,8),
+                senkou_b NUMERIC(20,8),
+                tenkan NUMERIC(20,8),
+                kijun NUMERIC(20,8),
+                chikou NUMERIC(20,8),
+                long BOOLEAN DEFAULT FALSE,
+                short BOOLEAN DEFAULT FALSE,
+                testnet BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT unique_ichimoku UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_ichimoku_lookup 
+            ON indicadores_ichimoku(ativo, timeframe, open_time);
+            
+            -- Tabela: indicadores_supertrend
+            CREATE TABLE IF NOT EXISTS indicadores_supertrend (
+                id SERIAL PRIMARY KEY,
+                exchange VARCHAR(20) DEFAULT 'bybit',
+                ativo VARCHAR(20) NOT NULL,
+                timeframe VARCHAR(5) NOT NULL,
+                open_time TIMESTAMP NOT NULL,
+                preco NUMERIC(20,8) NOT NULL,
+                supertrend_value NUMERIC(20,8),
+                direcao VARCHAR(10),  -- 'LONG', 'SHORT'
+                long BOOLEAN DEFAULT FALSE,
+                short BOOLEAN DEFAULT FALSE,
+                testnet BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT unique_supertrend UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_supertrend_lookup 
+            ON indicadores_supertrend(ativo, timeframe, open_time);
+            
+            -- Tabela: indicadores_bollinger
+            CREATE TABLE IF NOT EXISTS indicadores_bollinger (
+                id SERIAL PRIMARY KEY,
+                exchange VARCHAR(20) DEFAULT 'bybit',
+                ativo VARCHAR(20) NOT NULL,
+                timeframe VARCHAR(5) NOT NULL,
+                open_time TIMESTAMP NOT NULL,
+                preco NUMERIC(20,8) NOT NULL,
+                upper_band NUMERIC(20,8),
+                middle_band NUMERIC(20,8),
+                lower_band NUMERIC(20,8),
+                bb_width NUMERIC(20,8),
+                squeeze BOOLEAN DEFAULT FALSE,
+                long BOOLEAN DEFAULT FALSE,
+                short BOOLEAN DEFAULT FALSE,
+                testnet BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT unique_bollinger UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_bollinger_lookup 
+            ON indicadores_bollinger(ativo, timeframe, open_time);
+            
+            -- Tabela: indicadores_volume
+            CREATE TABLE IF NOT EXISTS indicadores_volume (
+                id SERIAL PRIMARY KEY,
+                exchange VARCHAR(20) DEFAULT 'bybit',
+                ativo VARCHAR(20) NOT NULL,
+                timeframe VARCHAR(5) NOT NULL,
+                open_time TIMESTAMP NOT NULL,
+                volume NUMERIC(20,8) NOT NULL,
+                volume_medio NUMERIC(20,8),
+                volume_ratio NUMERIC(10,4),
+                breakout BOOLEAN DEFAULT FALSE,
+                long BOOLEAN DEFAULT FALSE,
+                short BOOLEAN DEFAULT FALSE,
+                testnet BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT unique_volume UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_volume_lookup 
+            ON indicadores_volume(ativo, timeframe, open_time);
+            
+            -- Tabela: indicadores_ema
+            CREATE TABLE IF NOT EXISTS indicadores_ema (
+                id SERIAL PRIMARY KEY,
+                exchange VARCHAR(20) DEFAULT 'bybit',
+                ativo VARCHAR(20) NOT NULL,
+                timeframe VARCHAR(5) NOT NULL,
+                open_time TIMESTAMP NOT NULL,
+                preco NUMERIC(20,8) NOT NULL,
+                ema_rapida NUMERIC(20,8),
+                ema_lenta NUMERIC(20,8),
+                crossover BOOLEAN DEFAULT FALSE,
+                long BOOLEAN DEFAULT FALSE,
+                short BOOLEAN DEFAULT FALSE,
+                testnet BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT unique_ema UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_ema_lookup 
+            ON indicadores_ema(ativo, timeframe, open_time);
+            
+            -- Tabela: indicadores_macd
+            CREATE TABLE IF NOT EXISTS indicadores_macd (
+                id SERIAL PRIMARY KEY,
+                exchange VARCHAR(20) DEFAULT 'bybit',
+                ativo VARCHAR(20) NOT NULL,
+                timeframe VARCHAR(5) NOT NULL,
+                open_time TIMESTAMP NOT NULL,
+                preco NUMERIC(20,8) NOT NULL,
+                macd_line NUMERIC(20,8),
+                signal_line NUMERIC(20,8),
+                histogram NUMERIC(20,8),
+                long BOOLEAN DEFAULT FALSE,
+                short BOOLEAN DEFAULT FALSE,
+                testnet BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT unique_macd UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_macd_lookup 
+            ON indicadores_macd(ativo, timeframe, open_time);
+            
+            -- Tabela: indicadores_rsi
+            CREATE TABLE IF NOT EXISTS indicadores_rsi (
+                id SERIAL PRIMARY KEY,
+                exchange VARCHAR(20) DEFAULT 'bybit',
+                ativo VARCHAR(20) NOT NULL,
+                timeframe VARCHAR(5) NOT NULL,
+                open_time TIMESTAMP NOT NULL,
+                preco NUMERIC(20,8) NOT NULL,
+                rsi NUMERIC(5,2),
+                long BOOLEAN DEFAULT FALSE,
+                short BOOLEAN DEFAULT FALSE,
+                testnet BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT unique_rsi UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_rsi_lookup 
+            ON indicadores_rsi(ativo, timeframe, open_time);
+            
+            -- Tabela: indicadores_vwap
+            CREATE TABLE IF NOT EXISTS indicadores_vwap (
+                id SERIAL PRIMARY KEY,
+                exchange VARCHAR(20) DEFAULT 'bybit',
+                ativo VARCHAR(20) NOT NULL,
+                timeframe VARCHAR(5) NOT NULL,
+                open_time TIMESTAMP NOT NULL,
+                preco NUMERIC(20,8) NOT NULL,
+                vwap NUMERIC(20,8),
+                distancia_percentual NUMERIC(10,4),
+                long BOOLEAN DEFAULT FALSE,
+                short BOOLEAN DEFAULT FALSE,
+                testnet BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT unique_vwap UNIQUE (exchange, ativo, timeframe, open_time, testnet)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_vwap_lookup 
+            ON indicadores_vwap(ativo, timeframe, open_time);
+            
+            -- Tabela: pares_filtro_dinamico (para rastrear dados do filtro)
+            CREATE TABLE IF NOT EXISTS pares_filtro_dinamico (
+                id SERIAL PRIMARY KEY,
+                exchange VARCHAR(20) DEFAULT 'bybit',
+                ativo VARCHAR(20) NOT NULL,
+                volume_24h NUMERIC(20,8),
+                mediana_volume_24h NUMERIC(20,8),
+                idade_dias INTEGER,
+                volume_medio_15m NUMERIC(20,8),
+                volume_medio_1h NUMERIC(20,8),
+                fail_rate NUMERIC(5,4),
+                ciclos_bloqueio INTEGER DEFAULT 0,
+                aprovado BOOLEAN DEFAULT FALSE,
+                motivo_rejeicao TEXT,
+                testnet BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP DEFAULT NOW(),
+                atualizado_em TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT unique_par_filtro UNIQUE (exchange, ativo, testnet)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_filtro_ativo 
+            ON pares_filtro_dinamico(ativo, testnet);
+            
+            CREATE INDEX IF NOT EXISTS idx_filtro_aprovado 
+            ON pares_filtro_dinamico(aprovado, testnet);
+            
+            -- Tabelas do PluginIA (v2.0.0)
+            -- Tabela: ia_insights
+            CREATE TABLE IF NOT EXISTS ia_insights (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+                par VARCHAR(50) NOT NULL,
+                modo VARCHAR(20) NOT NULL,
+                insight TEXT NOT NULL,
+                dados_contexto JSONB,
+                sugestao TEXT,
+                aceita BOOLEAN DEFAULT FALSE,
+                versao_sistema VARCHAR(20),
+                criado_em TIMESTAMP DEFAULT NOW()
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_ia_insights_par 
+            ON ia_insights(par, timestamp);
+            
+            CREATE INDEX IF NOT EXISTS idx_ia_insights_modo 
+            ON ia_insights(modo);
+            
+            -- Tabela: ia_dados_historico
+            CREATE TABLE IF NOT EXISTS ia_dados_historico (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+                par VARCHAR(50) NOT NULL,
+                ohlcv JSONB,
+                indicadores JSONB,
+                contagem_indicadores INTEGER,
+                resultado_trade JSONB,
+                contexto JSONB,
+                versao_sistema VARCHAR(20),
+                criado_em TIMESTAMP DEFAULT NOW()
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_ia_dados_historico_par 
+            ON ia_dados_historico(par, timestamp);
+            
+            -- Tabela: ia_trades
+            CREATE TABLE IF NOT EXISTS ia_trades (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+                par VARCHAR(50) NOT NULL,
+                tendencia VARCHAR(20),
+                confianca INTEGER,
+                motivo TEXT,
+                acao VARCHAR(20),
+                tp NUMERIC,
+                sl NUMERIC,
+                status VARCHAR(20),
+                resultado JSONB,
+                versao_sistema VARCHAR(20),
+                criado_em TIMESTAMP DEFAULT NOW()
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_ia_trades_par 
+            ON ia_trades(par, timestamp);
+            
+            CREATE INDEX IF NOT EXISTS idx_ia_trades_status 
+            ON ia_trades(status);
             """
             
             cursor.execute(create_velas_table)
@@ -612,11 +873,39 @@ class PluginBancoDados(Plugin):
             self._registrar_versao_schema("padroes_confidence", "v1.3.0", 
                 "Tabela de histórico de confidence decay", conn)
             
+            # Registra versão das tabelas de indicadores (v1.4.0)
+            self._registrar_versao_schema("indicadores_ichimoku", "v1.4.0", 
+                "Tabela de dados do indicador Ichimoku Cloud", conn)
+            self._registrar_versao_schema("indicadores_supertrend", "v1.4.0", 
+                "Tabela de dados do indicador Supertrend", conn)
+            self._registrar_versao_schema("indicadores_bollinger", "v1.4.0", 
+                "Tabela de dados do indicador Bollinger Bands", conn)
+            self._registrar_versao_schema("indicadores_volume", "v1.4.0", 
+                "Tabela de dados do indicador Volume", conn)
+            self._registrar_versao_schema("indicadores_ema", "v1.4.0", 
+                "Tabela de dados do indicador EMA", conn)
+            self._registrar_versao_schema("indicadores_macd", "v1.4.0", 
+                "Tabela de dados do indicador MACD", conn)
+            self._registrar_versao_schema("indicadores_rsi", "v1.4.0", 
+                "Tabela de dados do indicador RSI", conn)
+            self._registrar_versao_schema("indicadores_vwap", "v1.4.0", 
+                "Tabela de dados do indicador VWAP", conn)
+            self._registrar_versao_schema("pares_filtro_dinamico", "v1.4.0", 
+                "Tabela de rastreamento do Filtro Dinâmico", conn)
+            
+            # Registra versão das tabelas do PluginIA (v2.0.0)
+            self._registrar_versao_schema("ia_insights", "v2.0.0", 
+                "Tabela de insights e sugestões gerados pela IA", conn)
+            self._registrar_versao_schema("ia_dados_historico", "v2.0.0", 
+                "Tabela de histórico de dados brutos do sistema 6/8", conn)
+            self._registrar_versao_schema("ia_trades", "v2.0.0", 
+                "Tabela de histórico de trades executados pela IA", conn)
+            
             cursor.close()
             self._devolver_conexao(conn)
             
             if self.logger:
-                self.logger.info(
+                self.logger.debug(
                     f"[{self.PLUGIN_NAME}] Tabelas criadas/verificadas com sucesso"
                 )
             
@@ -776,10 +1065,12 @@ class PluginBancoDados(Plugin):
             dict: Retorno padronizado com resultado da operação
         """
         try:
-            if self.logger:
-                self.logger.info(
-                    f"[{self.PLUGIN_NAME}][INSERT] Inserindo dados na tabela '{tabela}'"
-                )
+            # Modo silencioso: não loga INSERTs individuais (usado durante barra de progresso)
+            modo_silencioso = getattr(self, '_modo_silencioso', False)
+            
+            # Log reduzido - apenas DEBUG
+            # if not modo_silencioso:
+            #     ...
             
             # Converte para lista se necessário
             if isinstance(dados, dict):
@@ -799,16 +1090,18 @@ class PluginBancoDados(Plugin):
                 resultado = self._inserir_velas(dados)
             elif tabela == "telemetria_plugins":
                 resultado = self._inserir_telemetria(dados)
+            elif tabela == "pares_filtro_dinamico":
+                resultado = self._inserir_pares_filtro_dinamico(dados)
             elif tabela == "schema_versoes":
                 resultado = self._inserir_generico(tabela, dados)
             else:
                 resultado = self._inserir_generico(tabela, dados)
             
             if resultado["sucesso"]:
-                if self.logger:
-                    self.logger.info(
-                        f"[{self.PLUGIN_NAME}][INSERT] {resultado['linhas_afetadas']} registro(s) "
-                        f"inserido(s) na tabela '{tabela}'"
+                # Log reduzido - apenas DEBUG
+                if not modo_silencioso and self.logger:
+                    self.logger.debug(
+                        f"[{self.PLUGIN_NAME}] {resultado['linhas_afetadas']} registro(s) inserido(s) em '{tabela}'"
                     )
             else:
                 if self.logger:
@@ -856,19 +1149,33 @@ class PluginBancoDados(Plugin):
             dict: Retorno padronizado com dados consultados
         """
         try:
-            if self.logger:
-                self.logger.info(
-                    f"[{self.PLUGIN_NAME}][SELECT] Consultando tabela '{tabela}'"
-                )
+            # Modo silencioso: não loga SELECTs individuais (usado durante barra de progresso)
+            modo_silencioso = getattr(self, '_modo_silencioso', False)
+            
+            if not modo_silencioso:
+                if self.gerenciador_log:
+                    from plugins.gerenciadores.gerenciador_log import CategoriaLog
+                    self.gerenciador_log.log_categoria(
+                        categoria=CategoriaLog.BANCO,
+                        nome_origem=self.PLUGIN_NAME,
+                        mensagem=f"[SELECT] Consultando tabela '{tabela}'",
+                        nivel=logging.INFO,
+                        tipo_log="banco"
+                    )
             
             resultado = self._consultar(tabela, filtros, campos, limite, ordem)
             
             if resultado["sucesso"]:
-                if self.logger:
-                    self.logger.info(
-                        f"[{self.PLUGIN_NAME}][SELECT] {resultado['linhas_afetadas']} registro(s) "
-                        f"encontrado(s) na tabela '{tabela}'"
-                    )
+                if not modo_silencioso:
+                    if self.gerenciador_log:
+                        from plugins.gerenciadores.gerenciador_log import CategoriaLog
+                        self.gerenciador_log.log_categoria(
+                            categoria=CategoriaLog.BANCO,
+                            nome_origem=self.PLUGIN_NAME,
+                            mensagem=f"[SELECT] {resultado['linhas_afetadas']} registro(s) encontrado(s) na tabela '{tabela}'",
+                            nivel=logging.INFO,
+                            tipo_log="banco"
+                        )
             else:
                 if self.logger:
                     self.logger.warning(
@@ -1307,19 +1614,21 @@ class PluginBancoDados(Plugin):
             VALUES ({placeholders})
             """
             
-            # Prepara valores
+            # Prepara valores - converte dicts/listas para JSONB
             valores = []
             for registro in dados:
-                valores.append(tuple(registro.values()))
+                valores_linha = []
+                for valor in registro.values():
+                    # Converte dicts e listas para Json (JSONB no PostgreSQL)
+                    if isinstance(valor, (dict, list)):
+                        valores_linha.append(Json(valor))
+                    else:
+                        valores_linha.append(valor)
+                valores.append(tuple(valores_linha))
             
             # Executa inserção em lote
-            execute_values(
-                cursor,
-                insert_query,
-                valores,
-                template=None,
-                page_size=100,
-            )
+            # Usa executemany em vez de execute_values para evitar erro com múltiplos %s
+            cursor.executemany(insert_query, valores)
             
             linhas_afetadas = cursor.rowcount
             conn.commit()
@@ -1362,6 +1671,128 @@ class PluginBancoDados(Plugin):
                 sucesso=False,
                 operacao="INSERT",
                 tabela=tabela,
+                erro=str(e),
+            )
+    
+    def _inserir_pares_filtro_dinamico(self, dados: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Insere dados na tabela pares_filtro_dinamico com upsert.
+        
+        A tabela tem constraint UNIQUE (exchange, ativo, testnet), então usamos
+        ON CONFLICT DO UPDATE para fazer upsert. Não podemos usar execute_values
+        porque ele não suporta múltiplos placeholders %s com ON CONFLICT.
+        
+        Args:
+            dados: Lista de dicionários com dados a inserir
+            
+        Returns:
+            dict: Retorno padronizado
+        """
+        if not dados:
+            return self._formatar_retorno(
+                sucesso=True,
+                operacao="INSERT",
+                tabela="pares_filtro_dinamico",
+                mensagem="Nenhum dado para inserir",
+            )
+        
+        conn = None
+        try:
+            conn = self._obter_conexao()
+            if not conn:
+                return self._formatar_retorno(
+                    sucesso=False,
+                    operacao="INSERT",
+                    tabela="pares_filtro_dinamico",
+                    erro="Não foi possível obter conexão",
+                )
+            
+            cursor = conn.cursor()
+            
+            # Query de upsert (ON CONFLICT DO UPDATE)
+            upsert_query = """
+            INSERT INTO pares_filtro_dinamico (
+                exchange, ativo, volume_24h, mediana_volume_24h, idade_dias,
+                volume_medio_15m, volume_medio_1h, fail_rate, ciclos_bloqueio,
+                aprovado, motivo_rejeicao, testnet
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (exchange, ativo, testnet)
+            DO UPDATE SET
+                volume_24h = EXCLUDED.volume_24h,
+                mediana_volume_24h = EXCLUDED.mediana_volume_24h,
+                idade_dias = EXCLUDED.idade_dias,
+                volume_medio_15m = EXCLUDED.volume_medio_15m,
+                volume_medio_1h = EXCLUDED.volume_medio_1h,
+                fail_rate = EXCLUDED.fail_rate,
+                ciclos_bloqueio = EXCLUDED.ciclos_bloqueio,
+                aprovado = EXCLUDED.aprovado,
+                motivo_rejeicao = EXCLUDED.motivo_rejeicao,
+                atualizado_em = NOW()
+            """
+            
+            # Prepara valores
+            valores = []
+            for registro in dados:
+                valores.append((
+                    registro.get("exchange", "bybit"),
+                    registro.get("ativo"),
+                    registro.get("volume_24h"),
+                    registro.get("mediana_volume_24h"),
+                    registro.get("idade_dias"),
+                    registro.get("volume_medio_15m"),
+                    registro.get("volume_medio_1h"),
+                    registro.get("fail_rate"),
+                    registro.get("ciclos_bloqueio", 0),
+                    registro.get("aprovado", False),
+                    registro.get("motivo_rejeicao"),
+                    registro.get("testnet", False),
+                ))
+            
+            # Executa inserção (usa executemany em vez de execute_values para evitar problema com múltiplos %s)
+            cursor.executemany(upsert_query, valores)
+            
+            linhas_afetadas = cursor.rowcount
+            conn.commit()
+            cursor.close()
+            self._devolver_conexao(conn)
+            
+            return self._formatar_retorno(
+                sucesso=True,
+                operacao="INSERT",
+                tabela="pares_filtro_dinamico",
+                dados=dados,
+                mensagem=f"{linhas_afetadas} registro(s) inserido(s)/atualizado(s)",
+                linhas_afetadas=linhas_afetadas,
+            )
+            
+        except psycopg2.Error as e:
+            if conn:
+                conn.rollback()
+                self._devolver_conexao(conn)
+            if self.logger:
+                self.logger.error(
+                    f"[{self.PLUGIN_NAME}][INSERT] Erro ao inserir em 'pares_filtro_dinamico': {e}",
+                    exc_info=True,
+                )
+            return self._formatar_retorno(
+                sucesso=False,
+                operacao="INSERT",
+                tabela="pares_filtro_dinamico",
+                erro=str(e),
+            )
+        except Exception as e:
+            if conn:
+                self._devolver_conexao(conn)
+            if self.logger:
+                self.logger.error(
+                    f"[{self.PLUGIN_NAME}][INSERT] Erro inesperado ao inserir em 'pares_filtro_dinamico': {e}",
+                    exc_info=True,
+                )
+            return self._formatar_retorno(
+                sucesso=False,
+                operacao="INSERT",
+                tabela="pares_filtro_dinamico",
                 erro=str(e),
             )
     

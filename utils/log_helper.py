@@ -83,22 +83,74 @@ class SmartFormatter(logging.Formatter):
     
     def format(self, record):
         """Formata a mensagem com cores se habilitado."""
-        # Formata normalmente primeiro
-        msg = super().format(record)
+        # Verifica se a mensagem começa com [CATEGORIA] (ex: [CORE], [FILTRO])
+        # Se sim, substitui o nível de log pela categoria
+        # Estratégia: lê mensagem original ANTES de formatar
+        mensagem_original = None
+        try:
+            # Obtém mensagem original do record ANTES de formatar
+            if hasattr(record, 'msg'):
+                if isinstance(record.msg, str):
+                    mensagem_original = record.msg
+                elif record.args:
+                    # Se há args, a mensagem será formatada - precisamos processar depois
+                    mensagem_original = None
+                else:
+                    mensagem_original = str(record.msg)
+        except:
+            pass
+        
+        # Se não conseguiu, tenta getMessage() mas isso pode já ter processado
+        if not mensagem_original:
+            try:
+                mensagem_original = record.getMessage()
+            except:
+                mensagem_original = None
+        
+        categoria_extraida = None
+        
+        # Primeiro, verifica se a categoria foi armazenada diretamente no record
+        if hasattr(record, '_categoria_log') and record._categoria_log:
+            categoria_extraida = record._categoria_log
+            # Remove categoria da mensagem se estiver presente
+            if mensagem_original and isinstance(mensagem_original, str) and mensagem_original.startswith(f"[{categoria_extraida}]"):
+                mensagem_sem_categoria = mensagem_original[len(f"[{categoria_extraida}]"):].strip()
+                record.msg = mensagem_sem_categoria
+                record.args = ()
+        # Se não encontrou, tenta extrair da mensagem
+        elif mensagem_original and isinstance(mensagem_original, str) and mensagem_original.startswith("[") and "]" in mensagem_original:
+            fim_categoria = mensagem_original.find("]")
+            if fim_categoria > 0:
+                categoria_extraida = mensagem_original[1:fim_categoria]
+                # Remove categoria da mensagem para não aparecer duplicada
+                mensagem_sem_categoria = mensagem_original[fim_categoria + 1:].strip()
+                record.msg = mensagem_sem_categoria
+                record.args = ()
+        
+        # Formata normalmente
+        msg_formatada = super().format(record)
+        
+        # Se encontrou categoria, substitui [LEVEL] por [CATEGORIA] na mensagem formatada
+        if categoria_extraida:
+            level = record.levelname
+            # Substitui [LEVEL] por [CATEGORIA] no formato (apenas primeira ocorrência)
+            if f"[{level}]" in msg_formatada:
+                msg_formatada = msg_formatada.replace(f"[{level}]", f"[{categoria_extraida}]", 1)
         
         # Adiciona cores apenas no console (não em arquivos)
         if self.use_colors and sys.stdout.isatty():
-            level = record.levelname
-            color = COLORS.get(level, COLORS["RESET"])
+            # Usa categoria se disponível, senão usa level
+            nivel_para_cor = categoria_extraida if categoria_extraida else record.levelname
+            color = COLORS.get(nivel_para_cor, COLORS.get(record.levelname, COLORS["RESET"]))
             reset = COLORS["RESET"]
             
-            # Aplica cor apenas ao nível de log na mensagem
-            # Formato: [timestamp] [name] [LEVEL] [file:line] message
-            # Colore apenas o [LEVEL]
-            if f"[{level}]" in msg:
-                msg = msg.replace(f"[{level}]", f"{color}[{level}]{reset}")
+            # Aplica cor ao nível/categoria na mensagem
+            if categoria_extraida and f"[{categoria_extraida}]" in msg_formatada:
+                msg_formatada = msg_formatada.replace(f"[{categoria_extraida}]", f"{color}[{categoria_extraida}]{reset}", 1)
+            elif f"[{record.levelname}]" in msg_formatada:
+                msg_formatada = msg_formatada.replace(f"[{record.levelname}]", f"{color}[{record.levelname}]{reset}", 1)
         
-        return msg
+        return msg_formatada
 
 
 # ============================

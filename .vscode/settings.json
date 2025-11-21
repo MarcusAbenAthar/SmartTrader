@@ -1,5 +1,5 @@
 {
-    "python.defaultInterpreterPath": "./.venv",
-    "python.terminal.activateEnvironment": true,
-    "terminal.integrated.shellIntegration.enabled": true
-  }
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+  "python.terminal.activateEnvironment": true,
+  "terminal.integrated.shellIntegration.enabled": true
+}
