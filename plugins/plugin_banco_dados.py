@@ -537,8 +537,22 @@ class PluginBancoDados(Plugin):
                 suggested_tp NUMERIC(20,8),
                 final_score NUMERIC(5,4) NOT NULL,
                 meta JSONB,
-                criado_em TIMESTAMP DEFAULT NOW()
+                criado_em TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT unique_padrao UNIQUE (symbol, timeframe, open_time, tipo_padrao)
             );
+            
+            -- Garante que constraint existe (para tabelas já criadas)
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint 
+                    WHERE conname = 'unique_padrao' 
+                    AND conrelid = 'padroes_detectados'::regclass
+                ) THEN
+                    ALTER TABLE padroes_detectados 
+                    ADD CONSTRAINT unique_padrao UNIQUE (symbol, timeframe, open_time, tipo_padrao);
+                END IF;
+            END $$;
             
             -- Índices para padroes_detectados
             CREATE INDEX IF NOT EXISTS idx_padroes_symbol_timeframe 
@@ -1092,6 +1106,8 @@ class PluginBancoDados(Plugin):
                 resultado = self._inserir_telemetria(dados)
             elif tabela == "pares_filtro_dinamico":
                 resultado = self._inserir_pares_filtro_dinamico(dados)
+            elif tabela == "padroes_detectados":
+                resultado = self._inserir_padroes_detectados(dados)
             elif tabela == "schema_versoes":
                 resultado = self._inserir_generico(tabela, dados)
             else:
@@ -1671,6 +1687,141 @@ class PluginBancoDados(Plugin):
                 sucesso=False,
                 operacao="INSERT",
                 tabela=tabela,
+                erro=str(e),
+            )
+    
+    def _inserir_padroes_detectados(self, dados: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Insere dados na tabela padroes_detectados com upsert.
+        
+        CRÍTICO: Usa ON CONFLICT DO UPDATE para lidar com:
+        1. Padrões duplicados (mesma vela, mesmo padrão)
+        2. Atualizações de velas retroativas (exchange corrigindo candle)
+        
+        Se a exchange atualizar uma vela retroativamente, o padrão detectado
+        anteriormente pode mudar (score, direção, etc.). O upsert atualiza
+        o padrão existente em vez de criar duplicata.
+        
+        A constraint UNIQUE (symbol, timeframe, open_time, tipo_padrao) garante
+        que não haja duplicatas mesmo se a verificação em memória falhar.
+        
+        Args:
+            dados: Lista de dicionários com padrões detectados
+            
+        Returns:
+            dict: Retorno padronizado
+        """
+        if not dados:
+            return self._formatar_retorno(
+                sucesso=True,
+                operacao="INSERT",
+                tabela="padroes_detectados",
+                mensagem="Nenhum dado para inserir",
+            )
+        
+        conn = None
+        try:
+            conn = self._obter_conexao()
+            if not conn:
+                return self._formatar_retorno(
+                    sucesso=False,
+                    operacao="INSERT",
+                    tabela="padroes_detectados",
+                    erro="Não foi possível obter conexão",
+                )
+            
+            cursor = conn.cursor()
+            
+            # Query de upsert (ON CONFLICT DO UPDATE)
+            # Atualiza padrão se vela for atualizada retroativamente pela exchange
+            upsert_query = """
+            INSERT INTO padroes_detectados (
+                symbol, timeframe, open_time, tipo_padrao, direcao,
+                score, confidence, regime, suggested_sl, suggested_tp,
+                final_score, meta
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, timeframe, open_time, tipo_padrao)
+            DO UPDATE SET
+                direcao = EXCLUDED.direcao,
+                score = EXCLUDED.score,
+                confidence = EXCLUDED.confidence,
+                regime = EXCLUDED.regime,
+                suggested_sl = EXCLUDED.suggested_sl,
+                suggested_tp = EXCLUDED.suggested_tp,
+                final_score = EXCLUDED.final_score,
+                meta = EXCLUDED.meta
+            WHERE padroes_detectados.score != EXCLUDED.score
+               OR padroes_detectados.final_score != EXCLUDED.final_score
+               OR padroes_detectados.direcao != EXCLUDED.direcao;
+            """
+            
+            # Prepara valores (garante que meta seja Json se for dict)
+            valores = []
+            for registro in dados:
+                meta = registro.get("meta")
+                if isinstance(meta, dict):
+                    meta = Json(meta)
+                
+                valores.append((
+                    registro.get("symbol"),
+                    registro.get("timeframe"),
+                    registro.get("open_time"),  # datetime UTC normalizado
+                    registro.get("tipo_padrao"),
+                    registro.get("direcao"),
+                    registro.get("score"),
+                    registro.get("confidence"),
+                    registro.get("regime"),
+                    registro.get("suggested_sl"),
+                    registro.get("suggested_tp"),
+                    registro.get("final_score"),
+                    meta,
+                ))
+            
+            # Executa inserção (usa executemany para suportar ON CONFLICT)
+            cursor.executemany(upsert_query, valores)
+            
+            linhas_afetadas = cursor.rowcount
+            conn.commit()
+            cursor.close()
+            self._devolver_conexao(conn)
+            
+            return self._formatar_retorno(
+                sucesso=True,
+                operacao="INSERT",
+                tabela="padroes_detectados",
+                dados=dados,
+                mensagem=f"{linhas_afetadas} padrão(ões) inserido(s)/atualizado(s)",
+                linhas_afetadas=linhas_afetadas,
+            )
+            
+        except psycopg2.Error as e:
+            if conn:
+                conn.rollback()
+                self._devolver_conexao(conn)
+            if self.logger:
+                self.logger.error(
+                    f"[{self.PLUGIN_NAME}][INSERT] Erro ao inserir padrões: {e}",
+                    exc_info=True,
+                )
+            return self._formatar_retorno(
+                sucesso=False,
+                operacao="INSERT",
+                tabela="padroes_detectados",
+                erro=str(e),
+            )
+        except Exception as e:
+            if conn:
+                self._devolver_conexao(conn)
+            if self.logger:
+                self.logger.error(
+                    f"[{self.PLUGIN_NAME}][INSERT] Erro inesperado ao inserir padrões: {e}",
+                    exc_info=True,
+                )
+            return self._formatar_retorno(
+                sucesso=False,
+                operacao="INSERT",
+                tabela="padroes_detectados",
                 erro=str(e),
             )
     

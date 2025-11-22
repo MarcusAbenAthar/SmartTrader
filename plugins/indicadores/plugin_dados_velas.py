@@ -110,8 +110,7 @@ class PluginDadosVelas(Plugin):
         self.json_path = Path("data/moedas_dados.json")
         self.json_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Callbacks para processamento incremental
-        self.callback_par_processado: Optional[Callable[[str, Dict[str, Any]], None]] = None
+        # Callback removido - processamento agora segue ordem normal do GerenciadorPlugins
         # Número de workers é calculado dinamicamente baseado na quantidade de pares
         # Fórmula: max(1, pares // 3) - sem limitação estática
         self._cancelamento_logado: bool = False  # Flag para evitar logs repetitivos
@@ -253,14 +252,8 @@ class PluginDadosVelas(Plugin):
                 )
             return False
     
-    def definir_callback_par_processado(self, callback: Callable[[str, Dict[str, Any]], None]):
-        """
-        Define callback que será chamado quando um par for completamente processado.
-        
-        Args:
-            callback: Função que recebe (par: str, dados_par: Dict[str, Any])
-        """
-        self.callback_par_processado = callback
+    # Método removido - callback não é mais usado
+    # Processamento agora segue ordem normal do GerenciadorPlugins
     
     def _buscar_timeframe_com_retry(
         self,
@@ -638,15 +631,27 @@ class PluginDadosVelas(Plugin):
                 pares_para_buscar = [par]
             elif self.plugin_filtro_dinamico:
                 # Executa filtro dinâmico para obter pares aprovados
+                # O filtro usa cache interno (TTL 5min) para evitar re-execução durante processamento por lotes
+                # Isso garante que todas as verificações (atividade/maturidade) sejam feitas apenas UMA VEZ por ciclo
                 resultado_filtro = self.plugin_filtro_dinamico.executar()
                 if resultado_filtro.get("status") == "ok":
                     pares_aprovados = resultado_filtro.get("pares_aprovados", [])
                     if pares_aprovados:
                         pares_para_buscar = pares_aprovados
+                        # Log apenas na primeira execução (quando não está usando cache)
+                        # O filtro loga internamente quando usa cache vs execução nova
                         if self.logger:
-                            self.logger.info(
-                                f"[{self.PLUGIN_NAME}] Filtro Dinâmico: {len(pares_aprovados)} par(es) aprovado(s)"
-                            )
+                            # Verifica se foi cache ou execução nova (via detalhes do resultado)
+                            usando_cache = resultado_filtro.get("usando_cache", False)
+                            if not usando_cache:
+                                self.logger.info(
+                                    f"[{self.PLUGIN_NAME}] Filtro Dinâmico: {len(pares_aprovados)} par(es) aprovado(s)"
+                                )
+                            else:
+                                # Usando cache - log apenas em DEBUG para reduzir spam
+                                self.logger.debug(
+                                    f"[{self.PLUGIN_NAME}] Filtro Dinâmico: usando {len(pares_aprovados)} par(es) aprovado(s) do cache"
+                                )
                     else:
                         # Nenhum par aprovado - usa lista configurada como fallback
                         pares_para_buscar = self.pares
@@ -791,16 +796,7 @@ class PluginDadosVelas(Plugin):
                             f"{len(dados_par)} timeframes"
                         )
                     
-                    # Notifica callback se disponível (para processamento incremental)
-                    if self.callback_par_processado and dados_par:
-                        try:
-                            self.callback_par_processado(par_atual, dados_par)
-                        except Exception as e:
-                            if self.logger:
-                                self.logger.error(
-                                    f"[{self.PLUGIN_NAME}] Erro no callback para {par_atual}: {e}",
-                                    exc_info=True
-                                )
+                    # Callback removido - processamento agora segue ordem normal do GerenciadorPlugins
                     
                     # Calcula tempo de processamento do par
                     tempo_fim_par = time.time()

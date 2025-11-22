@@ -68,6 +68,8 @@ class SmartTrader:
         self.gerenciador_plugins: Optional[GerenciadorPlugins] = None
         self.gerenciador_bot: Optional[GerenciadorBot] = None
         self._em_execucao = False
+        self._insights_ia_ciclo = []  # Armazena insights da IA para uso na consolidação de lotes
+        self._dados_ia_ciclo = []  # Armazena dados consolidados para processamento da IA
 
     def inicializar(self) -> bool:
         """
@@ -232,23 +234,7 @@ class SmartTrader:
             # Armazena referência ao filtro para uso no ciclo
             self.plugin_filtro_dinamico = plugin_filtro_dinamico
             
-            # Configura callback para processamento incremental
-            def callback_par_processado(par: str, dados_par: Dict[str, Any]):
-                """Callback chamado quando um par é processado - analisa imediatamente"""
-                try:
-                    # Processa indicadores para este par específico
-                    dados_entrada_par = {par: dados_par}
-                    self._processar_indicadores_par(dados_entrada_par)
-                except Exception as e:
-                    if self.gerenciador_log:
-                        self.gerenciador_log.log_erro_bot(
-                            origem="SmartTrader",
-                            mensagem=f"Erro no callback de par processado para {par}",
-                            detalhes={"par": par, "erro": str(e)},
-                            exc_info=True
-                        )
-            
-            plugin_dados_velas.definir_callback_par_processado(callback_par_processado)
+            # Callback removido - indicadores agora são executados na ordem normal do GerenciadorPlugins
             progress.update(advance=1)
             
             # 5. Registra os 8 plugins de indicadores técnicos
@@ -370,155 +356,9 @@ class SmartTrader:
                     # Executa todos os plugins registrados
                     resultados = self.gerenciador_plugins.executar_plugins()
                     
-                    # Executa IA no final do ciclo (após todos os pares serem processados)
-                    # CONSOLIDADO: Passa todos os dados de uma vez para evitar múltiplas chamadas à API
-                    dados_ia_count = len(self._dados_ia_ciclo) if hasattr(self, '_dados_ia_ciclo') else 0
-                    
-                    if hasattr(self, 'plugin_ia') and self.plugin_ia:
-                        if hasattr(self, '_dados_ia_ciclo') and self._dados_ia_ciclo:
-                            if self.gerenciador_log:
-                                logger_ia = self.gerenciador_log.get_logger("SmartTrader", "system")
-                                logger_ia.info(f"[SmartTrader] Processando IA para {dados_ia_count} par(es)...")
-                            try:
-                                # Passa TODOS os dados de uma vez para uma única chamada consolidada à API Groq
-                                # Isso reduz drasticamente o número de requisições e evita rate limits
-                                resultado_ia = self.plugin_ia.executar(dados_entrada={"dados_lote": self._dados_ia_ciclo})
-                                
-                                # Loga resultados da análise da IA
-                                if resultado_ia and resultado_ia.get("status") == "ok":
-                                    insights = resultado_ia.get("insights", [])
-                                    insights_gerados = resultado_ia.get("insights_gerados", 0)
-                                    pares_processados = resultado_ia.get("pares_processados", 0)
-                                    
-                                    # Log resumo da análise
-                                    if self.gerenciador_log:
-                                        self.gerenciador_log.log_evento(
-                                            tipo_log="system",
-                                            nome_origem="SmartTrader",
-                                            tipo_evento="ia_analise",
-                                            mensagem=f"IA: {insights_gerados} insight(s) gerado(s) para {pares_processados} par(es)",
-                                            nivel=logging.INFO
-                                        )
-                                    
-                                    # Loga cada insight
-                                    if insights:
-                                        for insight in insights:
-                                            par = insight.get("par", "UNKNOWN")
-                                            insight_texto = insight.get("insight", "")
-                                            confianca = insight.get("confianca", 0)
-                                            
-                                            # Validação: ignora insights vazios ou muito curtos
-                                            if not insight_texto or len(insight_texto.strip()) < 20:
-                                                continue
-                                            
-                                            # Limita tamanho do log para evitar poluição (máximo 500 caracteres)
-                                            insight_log = insight_texto
-                                            if len(insight_log) > 500:
-                                                insight_log = insight_texto[:500] + "... [truncado]"
-                                            
-                                            # Detecta se é mensagem genérica/repetitiva
-                                            mensagens_genericas = [
-                                                "não há padrões técnicos detectados",
-                                                "nenhuma sugestão de entrada",
-                                                "dados insuficientes",
-                                                "análise não disponível",
-                                                "descrição do padrão identificado: não há padrões",
-                                                "sugestão de entrada: nenhuma"
-                                            ]
-                                            
-                                            # Verifica se contém mensagens genéricas (case-insensitive)
-                                            insight_lower = insight_log.lower()
-                                            is_generico = any(
-                                                msg in insight_lower 
-                                                for msg in mensagens_genericas
-                                            )
-                                            
-                                            # Verifica se é mensagem repetitiva (mesma frase aparecendo múltiplas vezes)
-                                            palavras_unicas = len(set(insight_lower.split()))
-                                            palavras_totais = len(insight_lower.split())
-                                            # Se menos de 30% das palavras são únicas, provavelmente é repetitivo
-                                            is_repetitivo = palavras_totais > 20 and palavras_totais > 0 and (palavras_unicas / palavras_totais) < 0.3
-                                            
-                                            # Se for genérico OU repetitivo, não loga (reduz poluição de logs)
-                                            if is_generico or is_repetitivo:
-                                                # Mensagens genéricas/repetitivas são silenciadas
-                                                # Apenas loga em DEBUG se necessário para diagnóstico
-                                                if self.gerenciador_log:
-                                                    self.gerenciador_log.log_evento(
-                                                        tipo_log="ia",
-                                                        nome_origem="PluginIA",
-                                                        tipo_evento="insight_generico",
-                                                        mensagem=f"{par} — Insight genérico/repetitivo silenciado",
-                                                        nivel=logging.DEBUG,
-                                                        detalhes={
-                                                            "par": par,
-                                                            "is_generico": is_generico,
-                                                            "is_repetitivo": is_repetitivo,
-                                                            "tamanho_original": len(insight_texto),
-                                                            "palavras_unicas": palavras_unicas,
-                                                            "palavras_totais": palavras_totais
-                                                        }
-                                                    )
-                                                # Não continua - mensagem genérica/repetitiva não é logada em INFO
-                                                continue
-                                            else:
-                                                # Log insight válido (não genérico, não repetitivo)
-                                                if self.gerenciador_log:
-                                                    self.gerenciador_log.log_evento(
-                                                        tipo_log="ia",
-                                                        nome_origem="PluginIA",
-                                                        tipo_evento="insight",
-                                                        mensagem=f"{par} — {insight_log}",
-                                                        nivel=logging.INFO,
-                                                        detalhes={
-                                                            "confianca": confianca,
-                                                            "par": par,
-                                                            "insight_completo": insight_texto[:1000] if len(insight_texto) <= 1000 else insight_texto[:1000] + "... [truncado]",
-                                                            "tamanho_original": len(insight_texto),
-                                                            "is_generico": is_generico,
-                                                            "is_repetitivo": is_repetitivo
-                                                        }
-                                                    )
-                                            
-                                            # Log sugestão de entrada se houver
-                                            if insight.get("sugestao_entrada"):
-                                                sugestao = insight.get("sugestao_entrada", {})
-                                                if self.gerenciador_log:
-                                                    self.gerenciador_log.log_evento(
-                                                        tipo_log="system",
-                                                        nome_origem="SmartTrader",
-                                                        tipo_evento="ia_sugestao",
-                                                        mensagem=f"{par} — SUGESTÃO: {sugestao.get('direcao', 'N/A')} (confiança: {confianca:.1%})",
-                                                        nivel=logging.INFO
-                                                    )
-                                    elif insights_gerados == 0:
-                                        # Log se não gerou insights
-                                        if self.gerenciador_log:
-                                            self.gerenciador_log.log_evento(
-                                                tipo_log="ia",
-                                                nome_origem="PluginIA",
-                                                tipo_evento="sem_insights",
-                                                mensagem=f"Nenhum insight gerado para {pares_processados} par(es) processado(s)",
-                                                nivel=logging.WARNING
-                                            )
-                                
-                                # Limpa dados do ciclo após processar
-                                self._dados_ia_ciclo = []
-                            except Exception as e:
-                                if self.gerenciador_log:
-                                    self.gerenciador_log.log_erro_critico(
-                                        "SmartTrader",
-                                        f"Erro ao processar IA no final do ciclo: {e}",
-                                        exc_info=True
-                                    )
-                                # Limpa dados mesmo em caso de erro
-                                if hasattr(self, '_dados_ia_ciclo'):
-                                    self._dados_ia_ciclo = []
-                        else:
-                            # Log se não há dados para processar
-                            if dados_ia_count == 0 and self.gerenciador_log:
-                                logger_ia = self.gerenciador_log.get_logger("SmartTrader", "system")
-                                logger_ia.debug(f"[SmartTrader] Nenhum dado coletado para IA neste ciclo")
+                    # NOTA: IA agora é executada apenas após TODOS os lotes serem concluídos
+                    # (ver _executar_ia_apos_todos_lotes() abaixo)
+                    # Isso garante que todos os dados (indicadores + padrões) estejam disponíveis
                     
                     tempo_ciclo_fim = time.time()
                     tempo_ciclo_total_ms = (tempo_ciclo_fim - tempo_ciclo_inicio) * 1000
@@ -593,7 +433,26 @@ class SmartTrader:
                     if resultados and self.gerenciador_bot:
                         # resultados vem do executar_plugins que retorna {"resultados": {...}}
                         resultados_plugins = resultados.get("resultados", resultados)
+                        
+                        # Verifica se PluginDadosVelas foi executado e tem dados
+                        plugin_dados_velas = resultados_plugins.get("PluginDadosVelas", {})
+                        if plugin_dados_velas.get("status") == "ok" and plugin_dados_velas.get("dados"):
+                            # Executa indicadores após PluginDadosVelas ter coletado dados
+                            self._executar_indicadores_apos_velas(resultados_plugins)
+                            
+                            # Executa PluginPadroes após indicadores (precisa dos dados dos indicadores)
+                            self._executar_padroes_apos_indicadores(resultados_plugins)
+                            
+                            # Coleta dados para IA (indicadores + padrões)
+                            self._coletar_dados_para_ia(resultados_plugins)
+                        
+                        # Processa indicadores e valida entrada
                         self._processar_indicadores_e_validar(resultados_plugins)
+                        
+                        # Consolida e retorna resultados do lote processado
+                        resultado_lote = self._consolidar_resultado_lote(resultados_plugins)
+                        if resultado_lote:
+                            self._logar_resultado_lote(resultado_lote)
                     
                     # Verifica se todos os lotes foram concluídos antes de hibernar
                     todos_lotes_concluidos = False
@@ -606,6 +465,9 @@ class SmartTrader:
                     
                     # Hibernação/Cooldown APENAS após TODOS os lotes serem concluídos (60s fixos)
                     if todos_lotes_concluidos:
+                        # Executa IA após todos os lotes serem concluídos
+                        self._executar_ia_apos_todos_lotes()
+                        
                         self._hibernar_cooldown(60)
                     
                 except KeyboardInterrupt:
@@ -633,141 +495,9 @@ class SmartTrader:
                     detalhes={"erro": str(e)}
                 )
 
-    def _processar_indicadores_par(self, dados_par: Dict[str, Any]):
-        """
-        Processa indicadores para um par específico em paralelo (processamento incremental).
-        Consolida resultados em um único log INFO.
-        
-        Args:
-            dados_par: Dados de um par específico {par: dados_par}
-        """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
-        try:
-            # Extrai o nome do par
-            par = list(dados_par.keys())[0] if dados_par else "UNKNOWN"
-            
-            logger = self.gerenciador_log.get_logger("SmartTrader", "system")
-            
-            # Obtém lista de plugins de indicadores
-            indicadores_plugins = [
-                "PluginIchimoku",
-                "PluginSupertrend",
-                "PluginBollinger",
-                "PluginVolume",
-                "PluginEma",
-                "PluginMacd",
-                "PluginRsi",
-                "PluginVwap",
-            ]
-            
-            resultados_indicadores = {}
-            
-            # Executa todos os indicadores em paralelo
-            def executar_indicador(nome_plugin: str):
-                """Executa um indicador e retorna resultado"""
-                try:
-                    plugin = self.gerenciador_plugins.obter_plugin(nome_plugin)
-                    if not plugin:
-                        return (nome_plugin, None)
-                    
-                    resultado = plugin.executar(dados_entrada=dados_par)
-                    return (nome_plugin, resultado)
-                except Exception as e:
-                    if self.gerenciador_log:
-                        self.gerenciador_log.log_erro_bot(
-                            origem=f"{nome_plugin}",
-                            mensagem=f"Falha no cálculo para {par}",
-                            detalhes={"par": par, "plugin": nome_plugin, "erro": str(e)},
-                            exc_info=True
-                        )
-                    return (nome_plugin, None)
-            
-            # Executa indicadores em paralelo
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                futures = {executor.submit(executar_indicador, nome): nome 
-                          for nome in indicadores_plugins}
-                
-                for future in as_completed(futures):
-                    nome_plugin, resultado = future.result()
-                    if resultado and resultado.get("status") == "ok":
-                        resultados_indicadores[nome_plugin] = resultado
-            
-            # Consolida resultados e loga apenas um resultado final
-            if resultados_indicadores:
-                self._consolidar_e_logar_resultado_par(par, resultados_indicadores)
-                
-                # Valida entrada com resultados dos indicadores
-                if self.gerenciador_bot:
-                    self._processar_indicadores_e_validar(resultados_indicadores, par=par)
-                
-                # 1. Detecta padrões técnicos para este par
-                padroes_detectados = {}
-                if hasattr(self, 'plugin_padroes') and self.plugin_padroes:
-                    try:
-                        # Obtém dados de velas do PluginDadosVelas
-                        plugin_dados_velas = self.gerenciador_plugins.obter_plugin("PluginDadosVelas")
-                        if plugin_dados_velas and hasattr(plugin_dados_velas, 'dados_completos'):
-                            dados_velas_par = plugin_dados_velas.dados_completos.get("crus", {}).get(par, {})
-                            if dados_velas_par:
-                                resultado_padroes = self.plugin_padroes.executar(dados_entrada={par: dados_velas_par})
-                                if resultado_padroes.get("status") == "ok":
-                                    padroes_detectados = resultado_padroes.get("dados", {}).get(par, {})
-                                    if padroes_detectados and self.logger:
-                                        total_padroes = sum(len(p) if isinstance(p, list) else 1 for p in padroes_detectados.values())
-                                        self.logger.info(
-                                            f"[PADRÕES] {par} — {total_padroes} padrão(ões) detectado(s)"
-                                        )
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.warning(
-                                f"[SmartTrader] Erro ao detectar padrões para {par}: {e}",
-                                exc_info=True
-                            )
-                
-                # NOTA: IA será executada no final do ciclo para todos os pares de uma vez
-                # Armazena dados para processamento consolidado posterior
-                if not hasattr(self, '_dados_ia_ciclo'):
-                    self._dados_ia_ciclo = []
-                
-                # Prepara dados para IA (será processado no final)
-                dados_ia_par = {
-                    "par": par,
-                    "indicadores": resultados_indicadores,
-                    "padroes": padroes_detectados,
-                    "contexto": {
-                        "timestamp": datetime.now().isoformat(),
-                        "velas_disponiveis": len(dados_par.get(par, {}).get("15m", {}).get("velas", [])) if dados_par.get(par, {}).get("15m") else 0
-                    }
-                }
-                
-                # Obtém contagem de indicadores (para contexto)
-                contagem_long = sum(1 for r in resultados_indicadores.values() 
-                                  if isinstance(r, dict) and r.get("dados", {}).get(par, {}).get("15m", {}).get("long", False))
-                contagem_short = sum(1 for r in resultados_indicadores.values() 
-                                   if isinstance(r, dict) and r.get("dados", {}).get(par, {}).get("15m", {}).get("short", False))
-                
-                dados_ia_par["contagem"] = max(contagem_long, contagem_short)
-                dados_ia_par["contagem_long"] = contagem_long
-                dados_ia_par["contagem_short"] = contagem_short
-                
-                self._dados_ia_ciclo.append(dados_ia_par)
-                
-                # Log DEBUG: Confirma que dados foram adicionados
-                if self.gerenciador_log:
-                    logger_debug = self.gerenciador_log.get_logger("SmartTrader", "system")
-                    logger_debug.debug(
-                        f"[SmartTrader] Dados de IA coletados para {par} "
-                        f"(total no ciclo: {len(self._dados_ia_ciclo)})"
-                    )
-        
-        except Exception as e:
-            logger = self.gerenciador_log.get_logger("SmartTrader", "system")
-            logger.error(
-                f"[SmartTrader] Erro ao processar indicadores incrementalmente: {e}",
-                exc_info=True
-            )
-    
+    # Método _processar_indicadores_par removido
+    # Indicadores agora são executados na ordem normal do GerenciadorPlugins
+    # Cada plugin de indicador obtém dados automaticamente do PluginDadosVelas
     def _consolidar_e_logar_resultado_par(self, par: str, resultados_indicadores: Dict[str, Any]):
         """
         Consolida resultados dos indicadores e loga um único resultado INFO.
@@ -935,6 +665,524 @@ class SmartTrader:
                 f"[SmartTrader] Erro ao processar indicadores: {e}",
                 exc_info=True
             )
+    
+    def _consolidar_resultado_lote(self, resultados_plugins: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Consolida resultados de um lote processado.
+        
+        Retorna sinais, direção, SL, TP baseados na análise dos indicadores e IA.
+        
+        Args:
+            resultados_plugins: Resultados da execução dos plugins
+            
+        Returns:
+            dict: Resultado consolidado do lote ou None se não houver dados
+        """
+        try:
+            # Extrai dados do PluginDadosVelas para identificar quais pares foram processados neste lote
+            plugin_dados_velas = resultados_plugins.get("PluginDadosVelas", {})
+            if not isinstance(plugin_dados_velas, dict) or plugin_dados_velas.get("status") != "ok":
+                return None
+            
+            dados_velas = plugin_dados_velas.get("dados", {})
+            if not dados_velas:
+                return None
+            
+            # Identifica pares processados neste lote
+            pares_lote = list(dados_velas.keys())
+            if not pares_lote:
+                return None
+            
+            # Consolida resultados por par
+            sinais_consolidados = {}
+            
+            for par in pares_lote:
+                # Agrega resultados dos indicadores para este par
+                resultados_indicadores_par = {}
+                for nome_plugin, resultado in resultados_plugins.items():
+                    if nome_plugin.startswith("Plugin") and nome_plugin != "PluginDadosVelas":
+                        dados = resultado.get("dados", {})
+                        if par in dados:
+                            resultados_indicadores_par[nome_plugin] = {
+                                "dados": {par: dados[par]},
+                                "status": resultado.get("status", "ok")
+                            }
+                
+                # Valida entrada usando GerenciadorBot
+                if resultados_indicadores_par and self.gerenciador_bot:
+                    # Agrega resultados por timeframe para validação
+                    resultados_por_tf = {}
+                    for nome_plugin, resultado_plugin in resultados_indicadores_par.items():
+                        dados_par = resultado_plugin.get("dados", {}).get(par, {})
+                        for tf, dados_tf in dados_par.items():
+                            if tf not in resultados_por_tf:
+                                resultados_por_tf[tf] = {}
+                            # Mapeia nome do plugin para chave do indicador
+                            mapeamento = {
+                                "PluginIchimoku": "ichimoku",
+                                "PluginSupertrend": "supertrend",
+                                "PluginBollinger": "bollinger",
+                                "PluginVolume": "volume",
+                                "PluginEma": "ema",
+                                "PluginMacd": "macd",
+                                "PluginRsi": "rsi",
+                                "PluginVwap": "vwap",
+                            }
+                            chave_indicador = mapeamento.get(nome_plugin)
+                            if chave_indicador:
+                                resultados_por_tf[tf][chave_indicador] = {
+                                    "long": dados_tf.get("long", False),
+                                    "short": dados_tf.get("short", False),
+                                }
+                    
+                    # Valida usando o primeiro timeframe (ou pode agregar todos)
+                    if resultados_por_tf:
+                        # Usa o timeframe principal (15m) ou o primeiro disponível
+                        tf_principal = "15m" if "15m" in resultados_por_tf else list(resultados_por_tf.keys())[0]
+                        resultados_tf = resultados_por_tf[tf_principal]
+                        
+                        validacao = self.gerenciador_bot.validar_entrada(
+                            resultados_tf, 
+                            par=par
+                        )
+                        
+                        if validacao.get("valido"):
+                            direcao = validacao.get("direcao")
+                            contagem = validacao.get("contagem", 0)
+                            detalhes = validacao.get("detalhes", {})
+                            
+                            # Calcula SL e TP se houver preço de entrada
+                            sl = None
+                            tp = None
+                            preco_entrada = detalhes.get("preco_entrada")
+                            sl_nivel = detalhes.get("sl_nivel")
+                            
+                            if preco_entrada and sl_nivel and self.gerenciador_bot:
+                                risco = self.gerenciador_bot.calcular_risco(
+                                    par=par,
+                                    preco_entrada=preco_entrada,
+                                    sl_nivel=sl_nivel,
+                                    direcao=direcao
+                                )
+                                sl = risco.get("sl")
+                                tp = risco.get("tp")
+                            
+                            # Busca insight da IA para este par (se disponível)
+                            insight_ia = None
+                            if hasattr(self, '_insights_ia_ciclo'):
+                                for insight in self._insights_ia_ciclo:
+                                    if insight.get("par") == par:
+                                        insight_ia = insight
+                                        break
+                            
+                            sinais_consolidados[par] = {
+                                "par": par,
+                                "sinal": "ENTRADA",
+                                "direcao": direcao,
+                                "contagem_indicadores": contagem,
+                                "sl": sl,
+                                "tp": tp,
+                                "preco_entrada": preco_entrada,
+                                "timeframe": tf_principal,
+                                "insight_ia": insight_ia,
+                                "detalhes_validacao": detalhes
+                            }
+            
+            if sinais_consolidados:
+                return {
+                    "lote_processado": True,
+                    "pares": list(sinais_consolidados.keys()),
+                    "sinais": sinais_consolidados,
+                    "total_sinais": len(sinais_consolidados)
+                }
+            
+            return None
+            
+        except Exception as e:
+            if self.gerenciador_log:
+                self.gerenciador_log.log_erro_bot(
+                    origem="SmartTrader",
+                    mensagem="Erro ao consolidar resultado do lote",
+                    detalhes={"erro": str(e)},
+                    exc_info=True
+                )
+            return None
+    
+    def _logar_resultado_lote(self, resultado_lote: Dict[str, Any]):
+        """
+        Loga resultado consolidado de um lote processado.
+        
+        Args:
+            resultado_lote: Resultado consolidado do lote
+        """
+        try:
+            if not resultado_lote or not self.gerenciador_log:
+                return
+            
+            sinais = resultado_lote.get("sinais", {})
+            total_sinais = resultado_lote.get("total_sinais", 0)
+            
+            if total_sinais == 0:
+                return
+            
+            logger = self.gerenciador_log.get_logger("SmartTrader", "sinais")
+            
+            # Log resumo do lote
+            logger.info(
+                f"[LOTE] {total_sinais} sinal(is) de entrada detectado(s) em {len(sinais)} par(es)"
+            )
+            
+            # Log cada sinal com detalhes
+            for par, sinal in sinais.items():
+                direcao = sinal.get("direcao", "N/A")
+                contagem = sinal.get("contagem_indicadores", 0)
+                sl = sinal.get("sl")
+                tp = sinal.get("tp")
+                preco = sinal.get("preco_entrada")
+                timeframe = sinal.get("timeframe", "N/A")
+                insight_ia = sinal.get("insight_ia")
+                
+                # Monta mensagem detalhada
+                partes = [
+                    f"Par: {par}",
+                    f"Direção: {direcao}",
+                    f"Indicadores: {contagem}/8",
+                    f"Timeframe: {timeframe}"
+                ]
+                
+                if preco:
+                    partes.append(f"Preço: {preco:.2f}")
+                if sl:
+                    partes.append(f"SL: {sl:.2f}")
+                if tp:
+                    partes.append(f"TP: {tp:.2f}")
+                
+                mensagem = " | ".join(partes)
+                
+                # Adiciona insight da IA se disponível
+                if insight_ia:
+                    confianca_ia = insight_ia.get("confianca", 0)
+                    sugestao_ia = insight_ia.get("sugestao_entrada", {})
+                    if sugestao_ia:
+                        direcao_ia = sugestao_ia.get("direcao", "N/A")
+                        mensagem += f" | IA: {direcao_ia} (confiança: {confianca_ia:.1%})"
+                
+                logger.info(f"[SINAL] {mensagem}")
+                
+                # Log estruturado usando log_sinal
+                self.gerenciador_log.log_sinal(
+                    moeda=par,
+                    tipo_sinal="ENTRADA",
+                    direcao=direcao,
+                    timeframe=timeframe,
+                    preco=preco,
+                    detalhes={
+                        "contagem_indicadores": contagem,
+                        "sl": sl,
+                        "tp": tp,
+                        "confianca_ia": insight_ia.get("confianca") if insight_ia else None
+                    }
+                )
+                
+        except Exception as e:
+            if self.gerenciador_log:
+                self.gerenciador_log.log_erro_bot(
+                    origem="SmartTrader",
+                    mensagem="Erro ao logar resultado do lote",
+                    detalhes={"erro": str(e)},
+                    exc_info=True
+                )
+    
+    def _executar_indicadores_apos_velas(self, resultados_plugins: Dict[str, Any]):
+        """
+        Executa plugins de indicadores após PluginDadosVelas ter coletado dados.
+        
+        Args:
+            resultados_plugins: Resultados da execução dos plugins
+        """
+        try:
+            # Lista de plugins de indicadores para executar
+            plugins_indicadores = [
+                "PluginIchimoku", "PluginSupertrend", "PluginBollinger",
+                "PluginVolume", "PluginEma", "PluginMacd", "PluginRsi", "PluginVwap"
+            ]
+            
+            # Executa cada indicador
+            for nome_plugin in plugins_indicadores:
+                if nome_plugin in self.gerenciador_plugins.plugins:
+                    plugin = self.gerenciador_plugins.plugins[nome_plugin]
+                    try:
+                        # Executa indicador (ele obtém dados automaticamente do PluginDadosVelas)
+                        resultado = plugin.executar()
+                        if resultado:
+                            resultados_plugins[nome_plugin] = resultado
+                    except Exception as e:
+                        if self.gerenciador_log:
+                            self.gerenciador_log.log_erro_bot(
+                                origem="SmartTrader",
+                                mensagem=f"Erro ao executar {nome_plugin}",
+                                detalhes={"erro": str(e)},
+                                exc_info=True
+                            )
+        except Exception as e:
+            if self.gerenciador_log:
+                self.gerenciador_log.log_erro_bot(
+                    origem="SmartTrader",
+                    mensagem="Erro ao executar indicadores",
+                    detalhes={"erro": str(e)},
+                    exc_info=True
+                )
+    
+    def _executar_padroes_apos_indicadores(self, resultados_plugins: Dict[str, Any]):
+        """
+        Executa PluginPadroes após indicadores terem sido calculados.
+        
+        Args:
+            resultados_plugins: Resultados da execução dos plugins
+        """
+        try:
+            if "PluginPadroes" in self.gerenciador_plugins.plugins:
+                plugin_padroes = self.gerenciador_plugins.plugins["PluginPadroes"]
+                try:
+                    # Executa padrões (ele obtém dados automaticamente do PluginDadosVelas e indicadores)
+                    resultado = plugin_padroes.executar()
+                    if resultado:
+                        resultados_plugins["PluginPadroes"] = resultado
+                except Exception as e:
+                    if self.gerenciador_log:
+                        self.gerenciador_log.log_erro_bot(
+                            origem="SmartTrader",
+                            mensagem="Erro ao executar PluginPadroes",
+                            detalhes={"erro": str(e)},
+                            exc_info=True
+                        )
+        except Exception as e:
+            if self.gerenciador_log:
+                self.gerenciador_log.log_erro_bot(
+                    origem="SmartTrader",
+                    mensagem="Erro ao executar padrões",
+                    detalhes={"erro": str(e)},
+                    exc_info=True
+                )
+    
+    def _coletar_dados_para_ia(self, resultados_plugins: Dict[str, Any]):
+        """
+        Coleta dados dos indicadores e padrões para processamento da IA.
+        
+        Args:
+            resultados_plugins: Resultados da execução dos plugins
+        """
+        try:
+            # Inicializa _dados_ia_ciclo se não existir
+            if not hasattr(self, '_dados_ia_ciclo'):
+                self._dados_ia_ciclo = []
+            
+            # Extrai dados do PluginDadosVelas
+            plugin_dados_velas = resultados_plugins.get("PluginDadosVelas", {})
+            if not isinstance(plugin_dados_velas, dict) or plugin_dados_velas.get("status") != "ok":
+                return
+            
+            dados_velas = plugin_dados_velas.get("dados", {})
+            if not dados_velas:
+                return
+            
+            # Extrai dados de padrões
+            plugin_padroes = resultados_plugins.get("PluginPadroes", {})
+            padroes_dados = {}
+            if isinstance(plugin_padroes, dict) and plugin_padroes.get("status") == "ok":
+                # PluginPadroes retorna lista de padrões, não dict por par
+                padroes_lista = plugin_padroes.get("padroes_detectados", [])
+                if isinstance(padroes_lista, list):
+                    # Agrupa padrões por par
+                    padroes_dados = {}
+                    for padrao in padroes_lista:
+                        symbol = padrao.get("symbol")
+                        if symbol:
+                            if symbol not in padroes_dados:
+                                padroes_dados[symbol] = []
+                            padroes_dados[symbol].append(padrao)
+            
+            # Para cada par processado neste lote
+            for par, dados_par in dados_velas.items():
+                # Agrega resultados dos indicadores para este par
+                indicadores_par = {}
+                for nome_plugin in ["PluginIchimoku", "PluginSupertrend", "PluginBollinger",
+                                   "PluginVolume", "PluginEma", "PluginMacd", "PluginRsi", "PluginVwap"]:
+                    resultado_plugin = resultados_plugins.get(nome_plugin, {})
+                    if isinstance(resultado_plugin, dict) and resultado_plugin.get("status") == "ok":
+                        dados_plugin = resultado_plugin.get("dados", {})
+                        if par in dados_plugin:
+                            indicadores_par[nome_plugin] = dados_plugin[par]
+                
+                # Conta sinais LONG/SHORT
+                contagem_long = 0
+                contagem_short = 0
+                for indicador_data in indicadores_par.values():
+                    if isinstance(indicador_data, dict):
+                        for tf_data in indicador_data.values():
+                            if isinstance(tf_data, dict):
+                                if tf_data.get("long", False):
+                                    contagem_long += 1
+                                if tf_data.get("short", False):
+                                    contagem_short += 1
+                
+                # Extrai padrões deste par
+                padroes_par = padroes_dados.get(par, [])
+                
+                # Adiciona dados consolidados para IA
+                dados_ia_par = {
+                    "par": par,
+                    "indicadores": indicadores_par,
+                    "padroes": padroes_par,
+                    "contagem": contagem_long + contagem_short,
+                    "contagem_long": contagem_long,
+                    "contagem_short": contagem_short,
+                    "contexto": {
+                        "velas": dados_par,
+                        "total_indicadores": len(indicadores_par)
+                    }
+                }
+                
+                # Adiciona ao ciclo (evita duplicatas)
+                par_existente = False
+                for idx, dados_existentes in enumerate(self._dados_ia_ciclo):
+                    if dados_existentes.get("par") == par:
+                        # Atualiza dados existentes
+                        self._dados_ia_ciclo[idx] = dados_ia_par
+                        par_existente = True
+                        break
+                
+                if not par_existente:
+                    self._dados_ia_ciclo.append(dados_ia_par)
+                    
+        except Exception as e:
+            if self.gerenciador_log:
+                self.gerenciador_log.log_erro_bot(
+                    origem="SmartTrader",
+                    mensagem="Erro ao coletar dados para IA",
+                    detalhes={"erro": str(e)},
+                    exc_info=True
+                )
+    
+    def _executar_ia_apos_todos_lotes(self):
+        """
+        Executa IA após todos os lotes serem concluídos.
+        """
+        try:
+            if not hasattr(self, 'plugin_ia') or not self.plugin_ia:
+                return
+            
+            if not hasattr(self, '_dados_ia_ciclo') or not self._dados_ia_ciclo:
+                if self.gerenciador_log:
+                    logger_ia = self.gerenciador_log.get_logger("SmartTrader", "system")
+                    logger_ia.debug("[SmartTrader] Nenhum dado coletado para IA")
+                return
+            
+            dados_ia_count = len(self._dados_ia_ciclo)
+            if self.gerenciador_log:
+                logger_ia = self.gerenciador_log.get_logger("SmartTrader", "system")
+                logger_ia.info(f"[SmartTrader] Processando IA para {dados_ia_count} par(es)...")
+            
+            # Executa IA com todos os dados coletados
+            resultado_ia = self.plugin_ia.executar(dados_entrada={"dados_lote": self._dados_ia_ciclo})
+            
+            # Processa resultados da IA
+            if resultado_ia and resultado_ia.get("status") == "ok":
+                insights = resultado_ia.get("insights", [])
+                insights_gerados = resultado_ia.get("insights_gerados", 0)
+                pares_processados = resultado_ia.get("pares_processados", 0)
+                
+                # Armazena insights para uso na consolidação de lotes
+                self._insights_ia_ciclo = insights
+                
+                # Log resumo da análise
+                if self.gerenciador_log:
+                    self.gerenciador_log.log_evento(
+                        tipo_log="system",
+                        nome_origem="SmartTrader",
+                        tipo_evento="ia_analise",
+                        mensagem=f"IA: {insights_gerados} insight(s) gerado(s) para {pares_processados} par(es)",
+                        nivel=logging.INFO
+                    )
+                
+                # Loga cada insight válido (já tem filtro de genéricos/repetitivos)
+                if insights:
+                    for insight in insights:
+                        par = insight.get("par", "UNKNOWN")
+                        insight_texto = insight.get("insight", "")
+                        confianca = insight.get("confianca", 0)
+                        
+                        # Validação: ignora insights vazios ou muito curtos
+                        if not insight_texto or len(insight_texto.strip()) < 20:
+                            continue
+                        
+                        # Limita tamanho do log
+                        insight_log = insight_texto
+                        if len(insight_log) > 500:
+                            insight_log = insight_texto[:500] + "... [truncado]"
+                        
+                        # Detecta se é mensagem genérica/repetitiva
+                        mensagens_genericas = [
+                            "não há padrões técnicos detectados",
+                            "nenhuma sugestão de entrada",
+                            "dados insuficientes",
+                            "análise não disponível",
+                            "descrição do padrão identificado: não há padrões",
+                            "sugestão de entrada: nenhuma"
+                        ]
+                        
+                        insight_lower = insight_log.lower()
+                        is_generico = any(msg in insight_lower for msg in mensagens_genericas)
+                        
+                        palavras_unicas = len(set(insight_lower.split()))
+                        palavras_totais = len(insight_lower.split())
+                        is_repetitivo = palavras_totais > 20 and palavras_totais > 0 and (palavras_unicas / palavras_totais) < 0.3
+                        
+                        # Se for genérico OU repetitivo, não loga
+                        if is_generico or is_repetitivo:
+                            continue
+                        
+                        # Log insight válido
+                        if self.gerenciador_log:
+                            self.gerenciador_log.log_evento(
+                                tipo_log="ia",
+                                nome_origem="PluginIA",
+                                tipo_evento="insight",
+                                mensagem=f"{par} — {insight_log}",
+                                nivel=logging.INFO,
+                                detalhes={
+                                    "confianca": confianca,
+                                    "par": par,
+                                    "insight_completo": insight_texto[:1000] if len(insight_texto) <= 1000 else insight_texto[:1000] + "... [truncado]",
+                                    "tamanho_original": len(insight_texto)
+                                }
+                            )
+                        
+                        # Log sugestão de entrada se houver
+                        if insight.get("sugestao_entrada"):
+                            sugestao = insight.get("sugestao_entrada", {})
+                            if self.gerenciador_log:
+                                self.gerenciador_log.log_evento(
+                                    tipo_log="system",
+                                    nome_origem="SmartTrader",
+                                    tipo_evento="ia_sugestao",
+                                    mensagem=f"{par} — SUGESTÃO: {sugestao.get('direcao', 'N/A')} (confiança: {confianca:.1%})",
+                                    nivel=logging.INFO
+                                )
+            
+            # Limpa dados do ciclo após processar
+            self._dados_ia_ciclo = []
+            
+        except Exception as e:
+            if self.gerenciador_log:
+                self.gerenciador_log.log_erro_critico(
+                    "SmartTrader",
+                    f"Erro ao processar IA após todos os lotes: {e}",
+                    exc_info=True
+                )
+            # Limpa dados mesmo em caso de erro
+            if hasattr(self, '_dados_ia_ciclo'):
+                self._dados_ia_ciclo = []
     
     def _hibernar_cooldown(self, segundos: int):
         """

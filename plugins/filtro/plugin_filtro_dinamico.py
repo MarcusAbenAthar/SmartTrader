@@ -16,6 +16,8 @@ from statistics import median
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from plugins.base_plugin import Plugin, StatusExecucao, TipoPlugin
 from plugins.base_plugin import GerenciadorLogProtocol, GerenciadorBancoProtocol
@@ -81,7 +83,7 @@ class PluginFiltroDinamico(Plugin):
         # Cache de resultado para evitar execuções duplicadas no mesmo ciclo
         self._cache_resultado: Optional[Dict[str, Any]] = None
         self._cache_timestamp: Optional[datetime] = None
-        self._cache_ttl_segundos = 5  # Cache válido por 5 segundos
+        self._cache_ttl_segundos = 300  # Cache válido por 5 minutos (evita re-execução durante processamento por lotes)
         
         # Cache de volumes 24h para evitar buscas duplicadas
         # Cache não expira - volumes 24h mudam lentamente, então mantemos cache indefinidamente
@@ -201,9 +203,12 @@ class PluginFiltroDinamico(Plugin):
                     if self.logger:
                         self.logger.debug(
                             f"[{self.PLUGIN_NAME}] Usando resultado em cache "
-                            f"({tempo_decorrido:.1f}s desde última execução)"
+                            f"({tempo_decorrido:.1f}s desde última execução) - evitando re-execução de verificações"
                         )
-                    return self._cache_resultado
+                    # Marca que está usando cache para que PluginDadosVelas saiba que não precisa logar novamente
+                    resultado_cache = self._cache_resultado.copy()
+                    resultado_cache["usando_cache"] = True
+                    return resultado_cache
             
             if self.logger:
                 self.logger.debug(f"[{self.PLUGIN_NAME}] ▶ Iniciando filtro dinâmico")
@@ -304,6 +309,9 @@ class PluginFiltroDinamico(Plugin):
                             nivel=logging.WARNING,
                             tipo_log="system"
                         )
+            
+            # Marca que não está usando cache (execução nova)
+            resultado["usando_cache"] = False
             
             # Atualiza cache
             self._cache_resultado = resultado
@@ -711,16 +719,15 @@ class PluginFiltroDinamico(Plugin):
                     f"(dados temporários, não serão armazenados)..."
                 )
             
-            # ESTRATÉGIA: Busca volumes individuais (fetch_tickers() não funciona bem com Bybit linear)
-            # Limita a busca aos primeiros N pares para não sobrecarregar a API
-            # Por padrão, busca para todos os pares, mas pode ser limitado se necessário
+            # ESTRATÉGIA OTIMIZADA: Tenta fetch_tickers() primeiro (muito mais rápido)
+            # Se falhar, usa paralelização com threads para buscar individualmente
             tickers = {}
             pares_para_buscar_limitado = pares_para_buscar[:min(len(pares_para_buscar), 300)]  # Limita a 300 para não sobrecarregar
             
             if self.logger:
                 if len(pares_para_buscar) > 0:
                     self.logger.info(
-                        f"[{self.PLUGIN_NAME}] Buscando volumes 24h individualmente para {len(pares_para_buscar_limitado)} pares "
+                        f"[{self.PLUGIN_NAME}] Buscando volumes 24h para {len(pares_para_buscar_limitado)} pares "
                         f"(de {len(pares_para_buscar)} novos, {len(pares) - len(pares_para_buscar)} já em cache)..."
                     )
                 else:
@@ -735,81 +742,158 @@ class PluginFiltroDinamico(Plugin):
                             volumes[par] = self._cache_volumes_24h[par]
                     return volumes
             
-            volumes_encontrados_temp = 0
-            
-            # Usa barra de progresso do Rich se disponível
-            from utils.progress_helper import get_progress_helper
-            progress = get_progress_helper()
-            
-            with progress.progress_bar(
-                total=len(pares_para_buscar_limitado),
-                description=f"[{self.PLUGIN_NAME}] Buscando volumes 24h"
-            ) as task:
-                for idx, par in enumerate(pares_para_buscar_limitado):
+            # TENTATIVA 1: Busca em lote com fetch_tickers() (muito mais rápido)
+            try:
+                if self.logger:
+                    self.logger.debug(
+                        f"[{self.PLUGIN_NAME}] Tentando buscar volumes 24h em lote com fetch_tickers()..."
+                    )
+                
+                # Tenta buscar todos os tickers de uma vez
+                all_tickers = exchange.fetch_tickers()
+                
+                if all_tickers and len(all_tickers) > 0:
+                    # Filtra apenas os pares que precisamos
+                    # Bybit pode retornar símbolos em diferentes formatos:
+                    # - "BTCUSDT" (sem separador)
+                    # - "BTC/USDT:USDT" (formato linear com separador)
+                    # - "BTC/USDT" (formato spot)
+                    for par in pares_para_buscar_limitado:
+                        # Tenta múltiplos formatos de símbolo
+                        symbol_variants = [
+                            par,  # BTCUSDT
+                            f"{par[:-4]}/USDT",  # BTC/USDT
+                            f"{par[:-4]}/USDT:USDT",  # BTC/USDT:USDT (linear)
+                        ]
+                        
+                        for symbol_variant in symbol_variants:
+                            if symbol_variant in all_tickers:
+                                tickers[symbol_variant] = all_tickers[symbol_variant]
+                                break  # Encontrou, não precisa tentar outros formatos
+                    
+                    # Se não encontrou nenhum ticker após filtrar, usa fallback
+                    if len(tickers) == 0:
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] fetch_tickers() retornou dados, mas nenhum par correspondente encontrado. "
+                                f"Total de tickers retornados: {len(all_tickers)}. Usando fallback..."
+                            )
+                        raise Exception("Nenhum ticker correspondente encontrado após filtrar")
+                    
+                    # Se não encontrou nenhum ticker após filtrar, usa fallback
+                    if len(tickers) == 0:
+                        if self.logger:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] fetch_tickers() retornou {len(all_tickers)} tickers, "
+                                f"mas nenhum par correspondente encontrado. Usando fallback..."
+                            )
+                        raise Exception("Nenhum ticker correspondente encontrado após filtrar")
+                    
+                    if self.logger:
+                        self.logger.info(
+                            f"[{self.PLUGIN_NAME}] Busca em lote concluída: {len(tickers)} tickers obtidos de {len(pares_para_buscar_limitado)} pares"
+                        )
+                else:
+                    raise Exception("fetch_tickers() retornou vazio")
+                    
+            except Exception as e_batch:
+                # TENTATIVA 2: Busca paralela com threads (fallback se fetch_tickers falhar)
+                if self.logger:
+                    self.logger.debug(
+                        f"[{self.PLUGIN_NAME}] Busca em lote falhou ({e_batch}), usando busca paralela com threads..."
+                    )
+                
+                def buscar_ticker_par(par: str) -> tuple:
+                    """Busca ticker para um par específico (usado em threads)"""
                     try:
-                        # Pequeno delay para não sobrecarregar a API (rate limiting)
-                        if idx > 0 and idx % 10 == 0:
-                            time.sleep(0.1)  # 100ms a cada 10 requisições
-                        
-                        # Tenta formato linear (futures) primeiro - formato padrão do Bybit
-                        symbol_linear = par  # BTCUSDT
+                        # Tenta formato linear (futures) primeiro
+                        symbol_linear = par
                         ticker = exchange.fetch_ticker(symbol_linear)
-                        
                         if ticker:
-                            tickers[symbol_linear] = ticker
-                            volumes_encontrados_temp += 1
-                        
-                        # Atualiza barra de progresso
-                        progress.update(advance=1)
-                        
-                    except Exception as e1:
-                        # Se falhar com formato linear, tenta spot (mas raramente necessário)
+                            return (symbol_linear, ticker)
+                    except Exception:
                         try:
+                            # Tenta formato spot como fallback
                             symbol_spot = f"{par[:-4]}/USDT"
                             ticker = exchange.fetch_ticker(symbol_spot)
                             if ticker:
-                                tickers[symbol_spot] = ticker
-                                volumes_encontrados_temp += 1
-                        except Exception as e2:
-                            # Silenciosamente ignora erros individuais
+                                return (symbol_spot, ticker)
+                        except Exception:
                             pass
-                        finally:
-                            # Atualiza barra mesmo em caso de erro
+                    return (None, None)
+                
+                # Usa ThreadPoolExecutor para paralelizar (máximo 10 threads simultâneas)
+                from utils.progress_helper import get_progress_helper
+                progress = get_progress_helper()
+                
+                with progress.progress_bar(
+                    total=len(pares_para_buscar_limitado),
+                    description=f"[{self.PLUGIN_NAME}] Buscando volumes 24h"
+                ) as task:
+                    with ThreadPoolExecutor(max_workers=10) as executor:
+                        # Submete todas as tarefas
+                        future_to_par = {
+                            executor.submit(buscar_ticker_par, par): par 
+                            for par in pares_para_buscar_limitado
+                        }
+                        
+                        # Processa resultados conforme completam
+                        for future in as_completed(future_to_par):
+                            symbol, ticker = future.result()
+                            if symbol and ticker:
+                                tickers[symbol] = ticker
                             progress.update(advance=1)
-            
-            if self.logger:
-                self.logger.info(
-                    f"[{self.PLUGIN_NAME}] Busca concluída: {len(tickers)} tickers obtidos de {len(pares_para_buscar_limitado)} pares"
-                )
+                
+                if self.logger:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] Busca paralela concluída: {len(tickers)} tickers obtidos de {len(pares_para_buscar_limitado)} pares"
+                    )
             
             volumes_encontrados = 0
+            
+            # Debug: mostra alguns exemplos de símbolos retornados (apenas primeira execução)
+            if self.logger and len(tickers) > 0 and volumes_encontrados == 0:
+                exemplos_simbolos = list(tickers.keys())[:5]
+                self.logger.debug(
+                    f"[{self.PLUGIN_NAME}] Exemplos de símbolos retornados: {exemplos_simbolos}"
+                )
             
             for par in pares:
                 volume_24h = None
                 ticker_encontrado = None
                 
-                # Tenta formato linear (futures) primeiro - formato padrão do Bybit
-                if par in tickers:
-                    ticker_encontrado = tickers[par]
-                else:
-                    # Tenta formato spot como fallback
-                    symbol_spot = f"{par[:-4]}/USDT"
-                    if symbol_spot in tickers:
-                        ticker_encontrado = tickers[symbol_spot]
-                    else:
-                        # Busca normalizada (sem barra, uppercase)
-                        for symbol_key, ticker in tickers.items():
-                            symbol_normalized = symbol_key.replace('/', '').upper()
-                            par_normalized = par.upper()
-                            if symbol_normalized == par_normalized:
-                                ticker_encontrado = ticker
-                                break
+                # Tenta múltiplos formatos de símbolo para encontrar o ticker correto
+                # Bybit pode retornar símbolos em diferentes formatos
+                symbol_variants = [
+                    par,  # BTCUSDT
+                    f"{par[:-4]}/USDT",  # BTC/USDT
+                    f"{par[:-4]}/USDT:USDT",  # BTC/USDT:USDT (linear)
+                ]
+                
+                # Primeiro tenta busca direta
+                for symbol_variant in symbol_variants:
+                    if symbol_variant in tickers:
+                        ticker_encontrado = tickers[symbol_variant]
+                        break
+                
+                # Se não encontrou, faz busca normalizada (remove separadores e compara)
+                if not ticker_encontrado:
+                    par_normalized = par.upper().replace('/', '').replace(':', '')
+                    for symbol_key, ticker in tickers.items():
+                        symbol_normalized = symbol_key.upper().replace('/', '').replace(':', '')
+                        # Remove "USDT" duplicado se houver (ex: "BTCUSDTUSDT" -> "BTCUSDT")
+                        if symbol_normalized.endswith('USDTUSDT'):
+                            symbol_normalized = symbol_normalized[:-4]
+                        if symbol_normalized == par_normalized:
+                            ticker_encontrado = ticker
+                            break
                 
                 if ticker_encontrado:
                     # Tenta múltiplos campos de volume (Bybit pode usar diferentes campos)
+                    # Prioriza quoteVolume24h (volume em USDT) que é o mais comum
                     volume_24h = (
-                        ticker_encontrado.get('quoteVolume') or 
                         ticker_encontrado.get('quoteVolume24h') or 
+                        ticker_encontrado.get('quoteVolume') or 
                         ticker_encontrado.get('baseVolume') or
                         ticker_encontrado.get('volume') or
                         0
@@ -1187,6 +1271,10 @@ class PluginFiltroDinamico(Plugin):
         if self.plugin_banco_dados:
             self.plugin_banco_dados._modo_silencioso = True
         
+        # Inicia contador de tempo
+        tempo_inicio = time.time()
+        total_linhas_novas = 0
+        
         try:
             if not self.plugin_banco_dados:
                 return
@@ -1216,10 +1304,22 @@ class PluginFiltroDinamico(Plugin):
                     contador_aprovados += 1
                     spinner = spinner_chars[spinner_index % len(spinner_chars)]
                     spinner_index += 1
+                    
+                    # Calcula tempo decorrido e estimativa
+                    tempo_decorrido = time.time() - tempo_inicio
+                    if contador_aprovados > 0:
+                        tempo_medio = tempo_decorrido / contador_aprovados
+                        tempo_restante = tempo_medio * (total_detalhes_aprovados - contador_aprovados)
+                        tempo_formatado = f"{tempo_decorrido:.1f}s"
+                        if tempo_restante > 0:
+                            tempo_formatado += f" (restante: {tempo_restante:.1f}s)"
+                    else:
+                        tempo_formatado = f"{tempo_decorrido:.1f}s"
+                    
                     self._mostrar_barra_progresso(
                         atual=contador_aprovados,
                         total=total_detalhes_aprovados,
-                        etapa="Salvando resultados no banco",
+                        etapa=f"Salvando resultados no banco [{tempo_formatado}]",
                         spinner=spinner
                     )
                 
@@ -1262,18 +1362,37 @@ class PluginFiltroDinamico(Plugin):
                     "atualizado_em": datetime.now()
                 }
                 
-                # Upsert no banco
-                self.plugin_banco_dados.inserir("pares_filtro_dinamico", [dados_filtro])
+                # Upsert no banco e acumula linhas afetadas
+                resultado_inserir = self.plugin_banco_dados.inserir("pares_filtro_dinamico", [dados_filtro])
+                if resultado_inserir and resultado_inserir.get("sucesso"):
+                    linhas_afetadas = resultado_inserir.get("linhas_afetadas", 0)
+                    total_linhas_novas += linhas_afetadas
             
             # Limpa barra de progresso
             self._limpar_barra_progresso()
-                
+            
         except Exception as e:
             # Limpa barra de progresso em caso de erro
             self._limpar_barra_progresso()
             if self.logger:
                 self.logger.warning(f"[{self.PLUGIN_NAME}] Erro ao salvar resultados no banco: {e}")
         finally:
+            # Calcula tempo total (sempre, mesmo em caso de erro)
+            tempo_total = time.time() - tempo_inicio
+            
+            # Mostra feedback único ao final (sempre, mesmo em caso de erro parcial)
+            if self.logger:
+                if total_linhas_novas > 0:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] ✓ Salvamento concluído: {total_linhas_novas} linha(s) nova(s)/atualizada(s) "
+                        f"em {tempo_total:.2f}s ({len(detalhes)} registro(s) processado(s))"
+                    )
+                else:
+                    self.logger.info(
+                        f"[{self.PLUGIN_NAME}] ✓ Salvamento concluído: {len(detalhes)} registro(s) processado(s) "
+                        f"em {tempo_total:.2f}s (nenhuma linha nova/atualizada)"
+                    )
+            
             # Desativa modo silencioso do banco ao finalizar
             if self.plugin_banco_dados:
                 self.plugin_banco_dados._modo_silencioso = False

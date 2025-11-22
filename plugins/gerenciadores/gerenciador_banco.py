@@ -164,14 +164,14 @@ class GerenciadorBanco(GerenciadorBase):
                     )
                 return False
 
-            # Valida schema (se disponível)
-            if self._schema_cache:
-                if not self._validar_schema(plugin, tabela):
-                    if self.logger:
-                        self.logger.warning(
-                            f"[{self.GERENCIADOR_NAME}] Schema não validado para "
-                            f"{plugin}.{tabela}, mas prosseguindo..."
-                        )
+            # Valida schema (cria automaticamente se não existir)
+            # IMPORTANTE: _validar_schema cria o schema na primeira chamada se não existir
+            if not self._validar_schema(plugin, tabela):
+                if self.logger:
+                    self.logger.warning(
+                        f"[{self.GERENCIADOR_NAME}] Schema não validado para "
+                        f"{plugin}.{tabela}, mas prosseguindo..."
+                    )
 
             # Delega ao BancoDados
             resultado = self.banco_dados.inserir(tabela, dados)

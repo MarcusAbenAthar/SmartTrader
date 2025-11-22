@@ -14,13 +14,14 @@ Conforme proxima_atualizacao.md:
 - Telemetria completa
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 from enum import Enum
 import math
 import logging
+import pytz
 
 from plugins.base_plugin import Plugin, StatusExecucao, TipoPlugin
 from plugins.base_plugin import GerenciadorLogProtocol, GerenciadorBancoProtocol
@@ -31,6 +32,79 @@ class RegimeMercado(Enum):
     TRENDING = "trending"
     RANGE = "range"
     INDEFINIDO = "indefinido"
+
+
+def normalizar_open_time_utc(open_time: Union[str, int, float, datetime, pd.Timestamp]) -> datetime:
+    """
+    Normaliza open_time para datetime UTC de forma consistente.
+    
+    CRÍTICO: Esta função garante que TODOS os open_times sejam normalizados
+    da mesma forma, evitando problemas de:
+    - Comparação string vs datetime
+    - Timezone inconsistente (UTC vs local)
+    - Formatos diferentes (timestamp vs string)
+    
+    REGRA DE OURO: Sempre usa open_time da exchange (não calcula).
+    
+    Args:
+        open_time: Timestamp em qualquer formato (string, int, float, datetime, pd.Timestamp)
+        
+    Returns:
+        datetime: datetime UTC normalizado (timezone-aware UTC)
+        
+    Raises:
+        ValueError: Se não conseguir converter o timestamp
+    """
+    try:
+        # Timezone UTC para garantir consistência
+        tz_utc = pytz.UTC
+        
+        # Caso 1: Já é datetime UTC (timezone-aware)
+        if isinstance(open_time, datetime):
+            if open_time.tzinfo is None:
+                # datetime sem timezone - assume UTC
+                return tz_utc.localize(open_time)
+            else:
+                # datetime com timezone - converte para UTC
+                return open_time.astimezone(tz_utc)
+        
+        # Caso 2: pd.Timestamp
+        if isinstance(open_time, pd.Timestamp):
+            # Converte para datetime UTC
+            if open_time.tzinfo is None:
+                # Sem timezone - assume UTC
+                return tz_utc.localize(open_time.to_pydatetime())
+            else:
+                # Com timezone - converte para UTC
+                return open_time.to_pydatetime().astimezone(tz_utc)
+        
+        # Caso 3: String (ISO format ou similar)
+        if isinstance(open_time, str):
+            # Tenta parsear como ISO format
+            dt = pd.to_datetime(open_time, utc=True)
+            if isinstance(dt, pd.Timestamp):
+                return dt.to_pydatetime().astimezone(tz_utc)
+            return dt.astimezone(tz_utc) if dt.tzinfo else tz_utc.localize(dt)
+        
+        # Caso 4: Timestamp numérico (int ou float)
+        if isinstance(open_time, (int, float)):
+            # Detecta se é milissegundos (> 1e10) ou segundos
+            if open_time > 1e10:
+                # Milissegundos
+                timestamp_seconds = open_time / 1000.0
+            else:
+                # Segundos
+                timestamp_seconds = float(open_time)
+            
+            # Converte para datetime UTC
+            dt_utc = datetime.utcfromtimestamp(timestamp_seconds)
+            return tz_utc.localize(dt_utc)
+        
+        # Caso não reconhecido
+        raise ValueError(f"Formato de open_time não reconhecido: {type(open_time)}")
+        
+    except Exception as e:
+        raise ValueError(f"Erro ao normalizar open_time '{open_time}': {e}")
 
 
 class PluginPadroes(Plugin):
@@ -104,6 +178,18 @@ class PluginPadroes(Plugin):
         # Controle de timestamps - última vela analisada por par/timeframe
         # Formato: {f"{symbol}_{timeframe}": timestamp}
         self._ultima_vela_analisada: Dict[str, int] = {}
+        
+        # Referência ao PluginBancoDados (para verificar padrões já persistidos)
+        self.plugin_banco_dados = None
+    
+    def definir_plugin_banco_dados(self, plugin_banco_dados):
+        """
+        Define referência ao PluginBancoDados.
+        
+        Args:
+            plugin_banco_dados: Instância do PluginBancoDados
+        """
+        self.plugin_banco_dados = plugin_banco_dados
         
         # Limites de velas por timeframe (Passo 1)
         self._limites_velas = {
@@ -383,30 +469,35 @@ class PluginPadroes(Plugin):
                         ultima_vela_nova_datetime = pd.to_datetime(ultima_vela_nova_row["datetime"])
                         
                         for padrao in padroes:
-                            padrao_open_time = padrao.get("open_time")
-                            
-                            # Converte open_time para datetime para comparação
-                            padrao_dt = None
+                            # CRÍTICO: Normaliza open_time usando função centralizada
+                            # Garante timezone UTC consistente e formato datetime
                             try:
-                                if isinstance(padrao_open_time, (pd.Timestamp, datetime)):
-                                    padrao_dt = pd.to_datetime(padrao_open_time)
-                                elif isinstance(padrao_open_time, str):
-                                    padrao_dt = pd.to_datetime(padrao_open_time)
-                                elif isinstance(padrao_open_time, (int, float)):
-                                    # Assume timestamp em milissegundos se > 1e10, senão segundos
-                                    ts = padrao_open_time / 1000 if padrao_open_time > 1e10 else padrao_open_time
-                                    padrao_dt = pd.to_datetime(ts, unit='s')
-                            except Exception:
+                                padrao_open_time = padrao.get("open_time")
+                                padrao_dt = normalizar_open_time_utc(padrao_open_time)
+                            except (ValueError, TypeError) as e:
+                                # Se não conseguir normalizar, pula este padrão
                                 padroes_rejeitados += 1
-                                continue  # Se não conseguir converter, pula este padrão
+                                if self.logger:
+                                    self.logger.debug(
+                                        f"[{self.PLUGIN_NAME}] Erro ao normalizar open_time do padrão "
+                                        f"{padrao.get('tipo_padrao')}: {e}. Padrão rejeitado."
+                                    )
+                                continue
                             
-                            # Compara datetime: só mantém se for da última vela nova (diferença < 1 segundo)
-                            if padrao_dt is not None:
-                                diff = abs((padrao_dt - ultima_vela_nova_datetime).total_seconds())
-                                if diff < 1.0:  # Mesma vela se diferença < 1 segundo
-                                    padroes_filtrados.append(padrao)
-                                else:
-                                    padroes_rejeitados += 1
+                            # Normaliza datetime da última vela nova para comparação
+                            try:
+                                ultima_vela_nova_dt = normalizar_open_time_utc(ultima_vela_nova_datetime)
+                            except (ValueError, TypeError):
+                                # Se falhar, usa datetime do DataFrame (já normalizado)
+                                ultima_vela_nova_dt = pd.to_datetime(ultima_vela_nova_datetime)
+                                if ultima_vela_nova_dt.tzinfo is None:
+                                    ultima_vela_nova_dt = pytz.UTC.localize(ultima_vela_nova_dt)
+                            
+                            # Compara datetime UTC normalizado: só mantém se for da última vela nova
+                            # Tolerância de 1 segundo para lidar com pequenas diferenças de precisão
+                            diff = abs((padrao_dt - ultima_vela_nova_dt).total_seconds())
+                            if diff < 1.0:  # Mesma vela se diferença < 1 segundo
+                                padroes_filtrados.append(padrao)
                             else:
                                 padroes_rejeitados += 1
                         
@@ -521,17 +612,42 @@ class PluginPadroes(Plugin):
         """
         Converte lista de velas para DataFrame pandas.
         
+        CRÍTICO: Preserva timestamp original da exchange (não calcula).
+        Garante timezone UTC consistente para todos os datetimes.
+        
         Args:
-            velas: Lista de dicionários com dados de velas
+            velas: Lista de dicionários com dados de velas da exchange
         
         Returns:
-            pd.DataFrame: DataFrame com colunas: timestamp, open, high, low, close, volume
+            pd.DataFrame: DataFrame com colunas: timestamp, datetime (UTC), open, high, low, close, volume
         """
         dados = []
         for vela in velas:
+            # CRÍTICO: Usa timestamp da exchange (não calcula)
+            # Se datetime não existir, cria a partir do timestamp (UTC)
+            timestamp = vela.get("timestamp")
+            datetime_vela = vela.get("datetime")
+            
+            # Se datetime não existe, cria a partir do timestamp (garante UTC)
+            if datetime_vela is None and timestamp is not None:
+                # Timestamp vem em milissegundos da exchange
+                timestamp_seconds = timestamp / 1000.0 if timestamp > 1e10 else timestamp
+                datetime_vela = datetime.utcfromtimestamp(timestamp_seconds)
+                datetime_vela = pytz.UTC.localize(datetime_vela)
+            elif datetime_vela is not None:
+                # Normaliza datetime existente para UTC
+                try:
+                    datetime_vela = normalizar_open_time_utc(datetime_vela)
+                except (ValueError, TypeError):
+                    # Se falhar, cria a partir do timestamp
+                    if timestamp is not None:
+                        timestamp_seconds = timestamp / 1000.0 if timestamp > 1e10 else timestamp
+                        datetime_vela = datetime.utcfromtimestamp(timestamp_seconds)
+                        datetime_vela = pytz.UTC.localize(datetime_vela)
+            
             dados.append({
-                "timestamp": vela.get("timestamp"),
-                "datetime": vela.get("datetime"),
+                "timestamp": timestamp,  # Timestamp original da exchange (preservado)
+                "datetime": datetime_vela,  # datetime UTC normalizado
                 "open": vela.get("open"),
                 "high": vela.get("high"),
                 "low": vela.get("low"),
@@ -540,7 +656,16 @@ class PluginPadroes(Plugin):
             })
         
         df = pd.DataFrame(dados)
-        df["datetime"] = pd.to_datetime(df["datetime"])
+        # Garante que datetime está em UTC (timezone-aware)
+        if df["datetime"].dtype == 'object':
+            df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
+        elif df["datetime"].dtype.name.startswith('datetime'):
+            # Se já é datetime, garante timezone UTC
+            if df["datetime"].dt.tz is None:
+                df["datetime"] = df["datetime"].dt.tz_localize('UTC')
+            else:
+                df["datetime"] = df["datetime"].dt.tz_convert('UTC')
+        
         df = df.sort_values("timestamp").reset_index(drop=True)
         
         return df
@@ -3580,18 +3705,17 @@ class PluginPadroes(Plugin):
             # Prepara dados para inserção (apenas padrões únicos)
             dados_inserir = []
             for padrao in padroes:
-                open_time = padrao.get("open_time")
-                # Converte datetime para formato compatível com PostgreSQL
-                if isinstance(open_time, pd.Timestamp):
-                    open_time = open_time.to_pydatetime()
-                elif isinstance(open_time, datetime):
-                    open_time = open_time
-                else:
-                    # Tenta converter string ou timestamp
-                    if isinstance(open_time, str):
-                        open_time = pd.to_datetime(open_time).to_pydatetime()
-                    elif isinstance(open_time, (int, float)):
-                        open_time = datetime.utcfromtimestamp(open_time / 1000 if open_time > 1e10 else open_time)
+                # CRÍTICO: Normaliza open_time usando função centralizada
+                # Garante timezone UTC consistente e formato datetime
+                try:
+                    open_time = normalizar_open_time_utc(padrao.get("open_time"))
+                except ValueError as e:
+                    if self.logger:
+                        self.logger.warning(
+                            f"[{self.PLUGIN_NAME}] Erro ao normalizar open_time do padrão: {e}. "
+                            f"Padrão: {padrao.get('tipo_padrao')}, Symbol: {padrao.get('symbol')}"
+                        )
+                    continue  # Pula este padrão se não conseguir normalizar
                 
                 # PASSO 4: Verifica se padrão já foi processado nesta execução (evita duplicatas na memória)
                 chave_padrao = (
@@ -3637,10 +3761,132 @@ class PluginPadroes(Plugin):
                     "meta": meta_serializado,
                 })
             
-            # PASSO 4: Persiste via gerenciador_banco (apenas padrões únicos)
+            # PASSO 5: Verifica padrões já persistidos no banco (evita duplicatas entre execuções)
+            # CRÍTICO: Só filtra padrões com MESMO (symbol, timeframe, open_time, tipo_padrao)
+            # Padrões em velas diferentes (open_time diferente) são considerados NOVOS
+            # Esta verificação é uma otimização - a constraint UNIQUE do banco garante a integridade final
+            if self.gerenciador_banco and dados_inserir and self.plugin_banco_dados:
+                try:
+                    # Constrói set de chaves dos padrões que queremos inserir
+                    # Chave = (symbol, timeframe, open_time_normalizado_utc, tipo_padrao)
+                    # CRÍTICO: Usa função centralizada para garantir normalização consistente
+                    padroes_para_inserir = {}
+                    for p in dados_inserir:
+                        # open_time já está normalizado em UTC na etapa anterior
+                        # Mas garante normalização novamente para comparação (segurança extra)
+                        try:
+                            open_time_normalizado = normalizar_open_time_utc(p["open_time"])
+                        except ValueError:
+                            # Se falhar, usa o open_time já normalizado da etapa anterior
+                            open_time_normalizado = p["open_time"]
+                        
+                        chave = (
+                            p["symbol"],
+                            p["timeframe"],
+                            open_time_normalizado,  # datetime UTC normalizado
+                            p["tipo_padrao"]
+                        )
+                        padroes_para_inserir[chave] = p
+                    
+                    # Agrupa por symbol/timeframe para consultas eficientes
+                    padroes_por_par = {}
+                    for chave, padrao in padroes_para_inserir.items():
+                        key_par = (chave[0], chave[1])  # (symbol, timeframe)
+                        if key_par not in padroes_por_par:
+                            padroes_por_par[key_par] = []
+                        padroes_por_par[key_par].append((chave, padrao))
+                    
+                    # Consulta padrões já persistidos para cada par/timeframe
+                    padroes_ja_persistidos = set()
+                    for (symbol, timeframe), padroes_par in padroes_por_par.items():
+                        try:
+                            # Extrai open_times únicos deste par para consulta
+                            open_times_par = [chave[2] for chave, _ in padroes_par]
+                            if not open_times_par:
+                                continue
+                            
+                            # Consulta padrões deste par/timeframe (últimas 24h para performance)
+                            from datetime import timedelta
+                            limite_tempo = datetime.utcnow() - timedelta(hours=24)
+                            
+                            resultado_consulta = self.plugin_banco_dados.consultar(
+                                tabela="padroes_detectados",
+                                filtros={
+                                    "symbol": symbol,
+                                    "timeframe": timeframe,
+                                },
+                                campos=["symbol", "timeframe", "open_time", "tipo_padrao"],
+                                ordem="open_time DESC",
+                                limite=200  # Limite razoável (últimas 200 padrões deste par)
+                            )
+                            
+                            if resultado_consulta.get("sucesso") and resultado_consulta.get("dados"):
+                                for padrao_existente in resultado_consulta["dados"]:
+                                    # CRÍTICO: Normaliza open_time usando função centralizada
+                                    # Garante comparação consistente (mesmo formato, mesmo timezone)
+                                    try:
+                                        open_time_existente = normalizar_open_time_utc(
+                                            padrao_existente.get("open_time")
+                                        )
+                                    except ValueError:
+                                        # Se falhar normalização, pula este padrão (não bloqueia outros)
+                                        if self.logger:
+                                            self.logger.debug(
+                                                f"[{self.PLUGIN_NAME}] Erro ao normalizar open_time do padrão existente, pulando."
+                                            )
+                                        continue
+                                    
+                                    # Só adiciona se o open_time estiver na lista de open_times que estamos verificando
+                                    # Comparação usa datetime UTC normalizado (garante precisão)
+                                    # Isso garante que só comparamos padrões das MESMAS velas
+                                    if open_time_existente in open_times_par:
+                                        padroes_ja_persistidos.add((
+                                            padrao_existente.get("symbol", ""),
+                                            padrao_existente.get("timeframe", ""),
+                                            open_time_existente,  # datetime UTC normalizado
+                                            padrao_existente.get("tipo_padrao", "")
+                                        ))
+                        except Exception as consulta_par_error:
+                            # Se houver erro na consulta deste par, continua (não bloqueia outros pares)
+                            if self.logger:
+                                self.logger.debug(
+                                    f"[{self.PLUGIN_NAME}] Erro ao verificar padrões para {symbol} {timeframe}: {consulta_par_error}"
+                                )
+                    
+                    # Filtra apenas padrões novos (não existem no banco com MESMA vela)
+                    # CRÍTICO: Só filtra se TODOS os 4 campos forem iguais (incluindo open_time)
+                    dados_inserir_novos = [
+                        padrao for chave, padrao in padroes_para_inserir.items()
+                        if chave not in padroes_ja_persistidos
+                    ]
+                    
+                    if self.logger:
+                        padroes_filtrados = len(dados_inserir) - len(dados_inserir_novos)
+                        if padroes_filtrados > 0:
+                            self.logger.debug(
+                                f"[{self.PLUGIN_NAME}] {padroes_filtrados} padrão(ões) já persistido(s) no banco "
+                                f"(mesma vela), pulando duplicatas. {len(dados_inserir_novos)} padrão(ões) novo(s) para inserir."
+                            )
+                    
+                    dados_inserir = dados_inserir_novos
+                        
+                except Exception as consulta_error:
+                    # Se houver erro na consulta, continua com todos os padrões (constraint UNIQUE vai tratar)
+                    if self.logger:
+                        self.logger.warning(
+                            f"[{self.PLUGIN_NAME}] Erro ao verificar padrões já persistidos: {consulta_error}. "
+                            f"Continuando com inserção (constraint UNIQUE vai tratar duplicatas)."
+                        )
+            
+            # PASSO 6: Persiste via gerenciador_banco (apenas padrões novos)
+            # CRÍTICO: Constraint UNIQUE garante que padrões duplicados não sejam inseridos
+            # Se a exchange atualizar uma vela retroativamente, o padrão será atualizado via ON CONFLICT
             if self.gerenciador_banco and dados_inserir:
                 try:
-                    # Usa transação para garantir atomicidade
+                    # NOTA: O PluginBancoDados deve usar ON CONFLICT DO UPDATE para lidar com
+                    # atualizações de velas retroativas da exchange
+                    # Se uma vela for atualizada, o padrão detectado anteriormente pode mudar
+                    # A constraint UNIQUE garante que não haja duplicatas
                     self.persistir_dados("padroes_detectados", dados_inserir)
                     
                     if self.logger:

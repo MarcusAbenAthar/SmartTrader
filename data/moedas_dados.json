@@ -1,265 +1,265 @@
 {
-  "timestamp": "2025-11-21T23:30:56.106837+00:00",
+  "timestamp": "2025-11-22T11:23:59.477597+00:00",
   "moedas": {
-    "BTCUSDT": {
-      "par": "BTCUSDT",
+    "APEXUSDT": {
+      "par": "APEXUSDT",
       "timeframes": {
         "15m": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763767800000,
-            "datetime": "2025-11-21T20:30:00-03:00",
-            "open": 84990.8,
-            "high": 84990.8,
-            "low": 84905.4,
-            "close": 84968.0,
-            "volume": 31.236,
-            "fechada": false
-          }
-        },
-        "4h": {
-          "quantidade_velas": 60,
-          "ultima_vela": {
-            "timestamp": 1763755200000,
-            "datetime": "2025-11-21T17:00:00-03:00",
-            "open": 84164.6,
-            "high": 85373.0,
-            "low": 83412.2,
-            "close": 84958.4,
-            "volume": 14807.591,
+            "timestamp": 1763810100000,
+            "datetime": "2025-11-22T08:15:00-03:00",
+            "open": 0.711,
+            "high": 0.7115,
+            "low": 0.7074,
+            "close": 0.7074,
+            "volume": 17216.1,
             "fechada": false
           }
         },
         "1h": {
           "quantidade_velas": 48,
           "ultima_vela": {
-            "timestamp": 1763766000000,
-            "datetime": "2025-11-21T20:00:00-03:00",
-            "open": 84239.3,
-            "high": 84997.4,
-            "low": 84075.3,
-            "close": 84958.4,
-            "volume": 1638.305,
+            "timestamp": 1763809200000,
+            "datetime": "2025-11-22T08:00:00-03:00",
+            "open": 0.7041,
+            "high": 0.7115,
+            "low": 0.7036,
+            "close": 0.7074,
+            "volume": 56191.1,
+            "fechada": false
+          }
+        },
+        "4h": {
+          "quantidade_velas": 60,
+          "ultima_vela": {
+            "timestamp": 1763798400000,
+            "datetime": "2025-11-22T05:00:00-03:00",
+            "open": 0.7141,
+            "high": 0.7141,
+            "low": 0.698,
+            "close": 0.7074,
+            "volume": 666455.2,
             "fechada": false
           }
         }
       }
     },
-    "ETHUSDT": {
-      "par": "ETHUSDT",
+    "IMXUSDT": {
+      "par": "IMXUSDT",
       "timeframes": {
         "15m": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763767800000,
-            "datetime": "2025-11-21T20:30:00-03:00",
-            "open": 2759.99,
-            "high": 2760.03,
-            "low": 2756.24,
-            "close": 2758.8,
-            "volume": 715.7,
+            "timestamp": 1763810100000,
+            "datetime": "2025-11-22T08:15:00-03:00",
+            "open": 0.3053,
+            "high": 0.3063,
+            "low": 0.3043,
+            "close": 0.3043,
+            "volume": 59640.0,
             "fechada": false
           }
         },
         "1h": {
           "quantidade_velas": 48,
           "ultima_vela": {
-            "timestamp": 1763766000000,
-            "datetime": "2025-11-21T20:00:00-03:00",
-            "open": 2719.98,
-            "high": 2760.03,
-            "low": 2711.23,
-            "close": 2758.8,
-            "volume": 35428.08,
+            "timestamp": 1763809200000,
+            "datetime": "2025-11-22T08:00:00-03:00",
+            "open": 0.3018,
+            "high": 0.3063,
+            "low": 0.3013,
+            "close": 0.3043,
+            "volume": 168490.3,
             "fechada": false
           }
         },
         "4h": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763755200000,
-            "datetime": "2025-11-21T17:00:00-03:00",
-            "open": 2750.81,
-            "high": 2775.43,
-            "low": 2706.11,
-            "close": 2758.8,
-            "volume": 245336.1,
+            "timestamp": 1763798400000,
+            "datetime": "2025-11-22T05:00:00-03:00",
+            "open": 0.3078,
+            "high": 0.3081,
+            "low": 0.2995,
+            "close": 0.3043,
+            "volume": 1516184.0,
             "fechada": false
           }
         }
       }
     },
-    "DOGEUSDT": {
-      "par": "DOGEUSDT",
+    "GOATUSDT": {
+      "par": "GOATUSDT",
       "timeframes": {
         "15m": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763767800000,
-            "datetime": "2025-11-21T20:30:00-03:00",
-            "open": 0.13991,
-            "high": 0.13992,
-            "low": 0.13963,
-            "close": 0.13985,
-            "volume": 1602955.0,
+            "timestamp": 1763810100000,
+            "datetime": "2025-11-22T08:15:00-03:00",
+            "open": 0.03979,
+            "high": 0.03995,
+            "low": 0.03968,
+            "close": 0.03969,
+            "volume": 324960.0,
             "fechada": false
           }
         },
         "1h": {
           "quantidade_velas": 48,
           "ultima_vela": {
-            "timestamp": 1763766000000,
-            "datetime": "2025-11-21T20:00:00-03:00",
-            "open": 0.13646,
-            "high": 0.13992,
-            "low": 0.13562,
-            "close": 0.13985,
-            "volume": 67172981.0,
+            "timestamp": 1763809200000,
+            "datetime": "2025-11-22T08:00:00-03:00",
+            "open": 0.03926,
+            "high": 0.03995,
+            "low": 0.03909,
+            "close": 0.03969,
+            "volume": 1196062.0,
             "fechada": false
           }
         },
         "4h": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763755200000,
-            "datetime": "2025-11-21T17:00:00-03:00",
-            "open": 0.13989,
-            "high": 0.14161,
-            "low": 0.13562,
-            "close": 0.13985,
-            "volume": 449208144.0,
+            "timestamp": 1763798400000,
+            "datetime": "2025-11-22T05:00:00-03:00",
+            "open": 0.03971,
+            "high": 0.03995,
+            "low": 0.03841,
+            "close": 0.03969,
+            "volume": 8635380.0,
             "fechada": false
           }
         }
       }
     },
-    "HYPEUSDT": {
-      "par": "HYPEUSDT",
+    "COMMONUSDT": {
+      "par": "COMMONUSDT",
       "timeframes": {
         "15m": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763767800000,
-            "datetime": "2025-11-21T20:30:00-03:00",
-            "open": 33.645,
-            "high": 33.645,
-            "low": 33.581,
-            "close": 33.614,
-            "volume": 1607.32,
+            "timestamp": 1763810100000,
+            "datetime": "2025-11-22T08:15:00-03:00",
+            "open": 0.006156,
+            "high": 0.006173,
+            "low": 0.006121,
+            "close": 0.006128,
+            "volume": 2475464.0,
             "fechada": false
           }
         },
         "1h": {
           "quantidade_velas": 48,
           "ultima_vela": {
-            "timestamp": 1763766000000,
-            "datetime": "2025-11-21T20:00:00-03:00",
-            "open": 33.074,
-            "high": 33.649,
-            "low": 32.992,
-            "close": 33.614,
-            "volume": 167473.96,
+            "timestamp": 1763809200000,
+            "datetime": "2025-11-22T08:00:00-03:00",
+            "open": 0.006046,
+            "high": 0.006208,
+            "low": 0.006042,
+            "close": 0.006128,
+            "volume": 12600538.0,
             "fechada": false
           }
         },
         "4h": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763755200000,
-            "datetime": "2025-11-21T17:00:00-03:00",
-            "open": 33.493,
-            "high": 34.298,
-            "low": 32.992,
-            "close": 33.614,
-            "volume": 1044632.58,
+            "timestamp": 1763798400000,
+            "datetime": "2025-11-22T05:00:00-03:00",
+            "open": 0.006034,
+            "high": 0.006208,
+            "low": 0.005891,
+            "close": 0.006128,
+            "volume": 77800067.0,
             "fechada": false
           }
         }
       }
     },
-    "ASTERUSDT": {
-      "par": "ASTERUSDT",
+    "DOODUSDT": {
+      "par": "DOODUSDT",
       "timeframes": {
         "15m": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763767800000,
-            "datetime": "2025-11-21T20:30:00-03:00",
-            "open": 1.2213,
-            "high": 1.2213,
-            "low": 1.2167,
-            "close": 1.2185,
-            "volume": 60903.0,
+            "timestamp": 1763810100000,
+            "datetime": "2025-11-22T08:15:00-03:00",
+            "open": 0.004139,
+            "high": 0.004159,
+            "low": 0.004129,
+            "close": 0.004136,
+            "volume": 2637070.0,
             "fechada": false
           }
         },
         "1h": {
           "quantidade_velas": 48,
           "ultima_vela": {
-            "timestamp": 1763766000000,
-            "datetime": "2025-11-21T20:00:00-03:00",
-            "open": 1.1996,
-            "high": 1.2225,
-            "low": 1.1949,
-            "close": 1.2185,
-            "volume": 4703587.0,
+            "timestamp": 1763809200000,
+            "datetime": "2025-11-22T08:00:00-03:00",
+            "open": 0.00407,
+            "high": 0.00418,
+            "low": 0.00407,
+            "close": 0.004136,
+            "volume": 13306870.0,
             "fechada": false
           }
         },
         "4h": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763755200000,
-            "datetime": "2025-11-21T17:00:00-03:00",
-            "open": 1.2317,
-            "high": 1.2526,
-            "low": 1.1949,
-            "close": 1.2185,
-            "volume": 23544107.0,
+            "timestamp": 1763798400000,
+            "datetime": "2025-11-22T05:00:00-03:00",
+            "open": 0.004179,
+            "high": 0.00418,
+            "low": 0.004038,
+            "close": 0.004136,
+            "volume": 61700030.0,
             "fechada": false
           }
         }
       }
     },
-    "FARTCOINUSDT": {
-      "par": "FARTCOINUSDT",
+    "FLOWUSDT": {
+      "par": "FLOWUSDT",
       "timeframes": {
         "15m": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763767800000,
-            "datetime": "2025-11-21T20:30:00-03:00",
-            "open": 0.2205,
-            "high": 0.2207,
-            "low": 0.2196,
-            "close": 0.2203,
-            "volume": 344922.0,
+            "timestamp": 1763810100000,
+            "datetime": "2025-11-22T08:15:00-03:00",
+            "open": 0.2355,
+            "high": 0.2357,
+            "low": 0.2349,
+            "close": 0.2353,
+            "volume": 60751.4,
             "fechada": false
           }
         },
         "1h": {
           "quantidade_velas": 48,
           "ultima_vela": {
-            "timestamp": 1763766000000,
-            "datetime": "2025-11-21T20:00:00-03:00",
-            "open": 0.2105,
-            "high": 0.2227,
-            "low": 0.2091,
-            "close": 0.2203,
-            "volume": 29202129.0,
+            "timestamp": 1763809200000,
+            "datetime": "2025-11-22T08:00:00-03:00",
+            "open": 0.2333,
+            "high": 0.2357,
+            "low": 0.233,
+            "close": 0.2353,
+            "volume": 274084.9,
             "fechada": false
           }
         },
         "4h": {
           "quantidade_velas": 60,
           "ultima_vela": {
-            "timestamp": 1763755200000,
-            "datetime": "2025-11-21T17:00:00-03:00",
-            "open": 0.2271,
-            "high": 0.2271,
-            "low": 0.2088,
-            "close": 0.2203,
-            "volume": 177498789.0,
+            "timestamp": 1763798400000,
+            "datetime": "2025-11-22T05:00:00-03:00",
+            "open": 0.2368,
+            "high": 0.2368,
+            "low": 0.2324,
+            "close": 0.2353,
+            "volume": 1817934.8,
             "fechada": false
           }
         }

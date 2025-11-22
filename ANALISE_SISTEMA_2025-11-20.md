@@ -213,22 +213,33 @@ Todos os insights contêm apenas:
 
 ### 🔴 **PRIORIDADE ALTA: Corrigir Extração de Insights da IA**
 
-**Problema:**
-- Insights contêm apenas texto introdutório
-- Confiança sempre 0
-- Análise não está sendo extraída da resposta da API
+**Status:** ⚠️ **PARCIALMENTE RESOLVIDO**
+
+**O que foi implementado:**
+- ✅ Filtro de frases introdutórias implementado (`frases_intro` em `_extrair_insights`)
+- ✅ Validação de insights genéricos/repetitivos em `main.py` (linhas 420-447)
+- ✅ Silenciamento de insights genéricos (log apenas em DEBUG)
+- ✅ Mínimo de 20 caracteres para insights válidos
+- ✅ Suporte a múltiplos formatos (JSON, markdown, texto)
+
+**O que ainda precisa ser verificado:**
+- ⚠️ Se a IA está realmente retornando apenas frases introdutórias (problema no prompt?)
+- ⚠️ Se a resposta completa da API está sendo capturada
+- ⚠️ Logs de debug da resposta bruta da API (para diagnóstico)
 
 **Ações Recomendadas:**
-1. Adicionar logs de debug para ver a resposta completa da API Groq
-2. Verificar o formato da resposta (JSON vs texto)
-3. Melhorar a lógica de extração para pegar o conteúdo completo
-4. Validar se o prompt está gerando respostas completas
+1. ✅ ~~Melhorar a lógica de extração~~ → **IMPLEMENTADO**
+2. ⚠️ Adicionar logs de debug para ver a resposta completa da API Groq
+3. ⚠️ Verificar se o prompt está gerando respostas completas
+4. ⚠️ Validar se insights genéricos estão sendo corretamente filtrados
 
-**Código a verificar:**
-- `plugins/ia/plugin_ia.py` - método de extração de insights
-- Logs de debug da resposta da API
+**Código implementado:**
+- `plugins/ia/plugin_ia.py` - método `_extrair_insights` (linhas 1050-1248)
+- `main.py` - validação de insights genéricos/repetitivos (linhas 420-447)
 
 ### 🟡 **PRIORIDADE MÉDIA: Melhorar Persistência do Cache**
+
+**Status:** ❌ **NÃO RESOLVIDO**
 
 **Problema:**
 - Cache não persiste entre reinicializações do sistema
@@ -242,8 +253,11 @@ Todos os insights contêm apenas:
 **Observação:**
 - Cache funciona corretamente durante a execução
 - Problema só ocorre na primeira execução após reinicialização
+- **Não é crítico** - impacto apenas na primeira execução
 
 ### 🟢 **PRIORIDADE BAIXA: Otimizar Taxa de Aprovação do Filtro**
+
+**Status:** ✅ **NÃO É PROBLEMA**
 
 **Observação:**
 - A diminuição da taxa de aprovação é **esperada** e **correta**
@@ -252,27 +266,94 @@ Todos os insights contêm apenas:
 
 ---
 
+## ✅ **PROBLEMAS RESOLVIDOS APÓS A ANÁLISE**
+
+### ✅ **Indicadores Não Executados (Refatoração)**
+
+**Status:** ✅ **RESOLVIDO**
+
+**Problema Original:**
+- Indicadores técnicos não apareciam como "executados" no `GerenciadorPlugins`
+- Processamento via callback quebrava a arquitetura modular
+
+**Solução Implementada:**
+- ✅ Removido sistema de callbacks
+- ✅ Indicadores agora executam diretamente via `GerenciadorPlugins`
+- ✅ Arquitetura modular respeitada
+- ✅ Logs corretos de execução
+
+**Arquivos modificados:**
+- `main.py` - Removido callback e método `_processar_indicadores_par`
+- `plugins/indicadores/plugin_dados_velas.py` - Removido callback
+
+### ✅ **Padrões Duplicados (Normalização de Timestamps)**
+
+**Status:** ✅ **RESOLVIDO**
+
+**Problema Original:**
+- Potencial para padrões duplicados devido a:
+  1. Comparação string vs datetime
+  2. Timezone inconsistente (UTC vs local)
+  3. Exchange corrigindo candles retroativamente
+
+**Solução Implementada:**
+- ✅ Função centralizada `normalizar_open_time_utc` em `PluginPadroes`
+- ✅ Constraint `UNIQUE (symbol, timeframe, open_time, tipo_padrao)` no banco
+- ✅ Upsert com `ON CONFLICT DO NOTHING` para padrões
+- ✅ Verificação in-memory de duplicatas antes de inserir
+- ✅ Uso consistente de `open_time` da exchange (datetime UTC)
+
+**Arquivos modificados:**
+- `plugins/padroes/plugin_padroes.py` - Normalização de timestamps
+- `plugins/plugin_banco_dados.py` - Constraint UNIQUE e upsert
+- `docs/garantias_timestamp_padroes.md` - Documentação das garantias
+
+---
+
 ## ✅ Conclusão
 
-### Estado Geral: **OPERACIONAL COM PROBLEMA CRÍTICO**
+### Estado Geral: **OPERACIONAL COM MELHORIAS IMPLEMENTADAS**
 
 O sistema está **funcionando corretamente** em quase todos os aspectos:
 - ✅ Filtro dinâmico operacional
-- ✅ Detecção de padrões funcionando
+- ✅ Detecção de padrões funcionando (sem duplicatas)
 - ✅ Processamento de dados estável
 - ✅ Cache funcionando (parcialmente)
 - ✅ Zero erros críticos
+- ✅ Indicadores executando corretamente (refatoração completa)
+- ✅ Normalização de timestamps implementada
 
-**Problema principal:** A IA não está gerando insights úteis. Todos os insights contêm apenas texto introdutório sem análise real. Isso precisa ser corrigido com **prioridade alta**.
+**Problemas resolvidos:**
+- ✅ Indicadores não executados → **RESOLVIDO** (refatoração)
+- ✅ Padrões duplicados → **RESOLVIDO** (normalização de timestamps)
+
+**Problemas pendentes:**
+- ⚠️ **Insights da IA:** Filtro implementado, mas precisa validação se IA está retornando conteúdo completo
+- ⚠️ **Cache não persiste:** Não crítico, apenas primeira execução
 
 ### Próximos Passos Recomendados
 
-1. **URGENTE:** Corrigir extração de insights da IA
-2. **MÉDIO PRAZO:** Melhorar persistência do cache
+1. **VALIDAR:** Testar se insights da IA estão sendo extraídos corretamente (adicionar logs de debug)
+2. **MÉDIO PRAZO:** Melhorar persistência do cache (opcional, não crítico)
 3. **BAIXA PRIORIDADE:** Revisar critérios de maturidade do filtro (se necessário)
 
 ---
 
 **Gerado em:** 2025-11-20  
+**Atualizado em:** 2025-11-22  
 **Versão do Sistema:** v2.0.0 (PluginIA), v1.0.0 (outros plugins)
+
+---
+
+## 📝 **CHANGELOG PÓS-ANÁLISE (22/11/2025)**
+
+### ✅ Resolvido
+- **Indicadores não executados:** Refatoração completa removendo callbacks
+- **Padrões duplicados:** Normalização de timestamps e constraint UNIQUE implementados
+
+### ⚠️ Parcialmente Resolvido
+- **Insights vazios:** Filtro de frases introdutórias implementado, mas precisa validação se IA retorna conteúdo completo
+
+### ❌ Pendente
+- **Cache não persiste:** Não crítico, apenas primeira execução
 
